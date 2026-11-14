@@ -283,6 +283,7 @@ npm run watch:css
 
 ```text
 Personal-Finance-Manager/
+├── .htaccess                   # Apache server hardening, custom error handlers & security headers
 ├── ajax/                       # Modular AJAX endpoints for asynchronous actions
 │   ├── accounts.php            # Account creation, editing, and status updates
 │   ├── bills.php               # Recurring bills management & mark-as-paid handler
@@ -309,6 +310,9 @@ Personal-Finance-Manager/
 │   ├── functions.php           # Ledger balance calculations, metrics & sanitization
 │   └── header.php              # Navigation header, dropdown controller & meta tags
 ├── pages/                      # Application route controllers
+│   ├── 403.php                 # 403 Access Forbidden error page
+│   ├── 404.php                 # 404 Not Found error page
+│   ├── 500.php                 # 500 Internal Server Error page
 │   ├── accounts.php            # Accounts portfolio management
 │   ├── bills.php               # Bills & subscription obligations
 │   ├── budgets.php             # Budget limits & expenditure meters

@@ -1,0 +1,57 @@
+# ------------------------------------------------------------------------------
+# Personal Finance Manager (PFM) - Apache Web Server Configuration (.htaccess)
+# Tailored for Shared Hosting (InfinityFree, cPanel, Hostinger) & Localhost
+# ------------------------------------------------------------------------------
+
+# 1. Prevent Directory Indexing / Directory Browsing
+Options -Indexes
+
+# 2. Follow Symbolic Links
+Options +FollowSymLinks
+
+# 3. Custom Error Documents
+ErrorDocument 403 /pages/403.php
+ErrorDocument 404 /pages/404.php
+ErrorDocument 500 /pages/500.php
+
+# 4. Protect Sensitive Files & Directories
+<FilesMatch "^(\.env|\.git|\.vscode|finance_manager\.sql|package\.json|package-lock\.json|PROJECT_INTELLIGENCE\.md)">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# 5. Prevent Direct Browser Execution of Include/Config Files
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Block direct URL requests to backend includes and config folders
+    RewriteRule ^(config|includes)/.*$ - [F,L]
+</IfModule>
+
+# 6. Enterprise Security Headers (applied if mod_headers is enabled)
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# 7. Default Charset & Content-Type
+AddDefaultCharset UTF-8
+
+# 8. MIME Types
+<IfModule mod_mime.c>
+    AddType image/svg+xml .svg
+    AddType text/css .css
+    AddType application/javascript .js
+</IfModule>
+
+# 9. Gzip / Deflate Compression (if mod_deflate is available)
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/plain text/html text/xml text/css application/xml application/xhtml+xml application/rss+xml application/javascript application/x-javascript image/svg+xml
+</IfModule>
