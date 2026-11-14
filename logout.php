@@ -1,6 +1,4 @@
 <?php
-session_start();
-session_destroy();
-header('Location: pages/login.php');
-exit;
-?>
+require_once __DIR__ . '/includes/auth.php';
+$auth = new Auth();
+$auth->logout('pages/login.php');

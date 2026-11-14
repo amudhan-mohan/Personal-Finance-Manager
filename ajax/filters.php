@@ -6,6 +6,7 @@ header('Content-Type: application/json');
 
 $auth = new Auth();
 if (!$auth->isLoggedIn()) {
+    http_response_code(401);
     echo json_encode(['success' => false, 'message' => 'Not authenticated']);
     exit;
 }

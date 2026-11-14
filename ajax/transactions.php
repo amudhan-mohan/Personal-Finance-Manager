@@ -6,6 +6,7 @@ header('Content-Type: application/json');
 
 $auth = new Auth();
 if (!$auth->isLoggedIn()) {
+    http_response_code(401);
     echo json_encode(['success' => false, 'message' => 'Not authenticated']);
     exit;
 }
@@ -14,112 +15,67 @@ $finance = new FinanceManager();
 $user_id = $auth->getUserId();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!$auth->validateCSRFRequest()) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Invalid or missing CSRF token']);
+        exit;
+    }
+
     $action = $_POST['action'] ?? '';
 
     switch ($action) {
         case 'add_transaction':
-            $account_id = $_POST['account_id'] ?? '';
+            $account_id = intval($_POST['account_id'] ?? 0);
             $type = $_POST['type'] ?? '';
-            $amount = $_POST['amount'] ?? 0;
-            $description = $_POST['description'] ?? '';
-            $category = $_POST['category'] ?? '';
+            $amount = floatval($_POST['amount'] ?? 0);
+            $description = trim($_POST['description'] ?? '');
+            $category = trim($_POST['category'] ?? '');
             $transaction_date = $_POST['transaction_date'] ?? date('Y-m-d');
+
+            if ($amount <= 0) {
+                echo json_encode(['success' => false, 'message' => 'Amount must be greater than zero']);
+                break;
+            }
+
+            if (!in_array($type, ['income', 'expense'], true)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid transaction type']);
+                break;
+            }
 
             if ($finance->addTransaction($user_id, $account_id, $type, $amount, $description, $category, $transaction_date)) {
                 echo json_encode(['success' => true, 'message' => 'Transaction added successfully']);
             } else {
-                echo json_encode(['success' => false, 'message' => 'Failed to add transaction']);
+                echo json_encode(['success' => false, 'message' => 'Failed to add transaction. Please verify the selected account.']);
             }
             break;
 
         case 'update_transaction':
-            $transaction_id = $_POST['transaction_id'] ?? '';
-            $account_id = $_POST['account_id'] ?? '';
+            $transaction_id = intval($_POST['transaction_id'] ?? 0);
+            $account_id = intval($_POST['account_id'] ?? 0);
             $type = $_POST['type'] ?? '';
-            $amount = $_POST['amount'] ?? 0;
-            $description = $_POST['description'] ?? '';
-            $category = $_POST['category'] ?? '';
-            $transaction_date = $_POST['transaction_date'] ?? '';
+            $amount = floatval($_POST['amount'] ?? 0);
+            $description = trim($_POST['description'] ?? '');
+            $category = trim($_POST['category'] ?? '');
+            $transaction_date = $_POST['transaction_date'] ?? date('Y-m-d');
 
-            // First get the old transaction details
-            $stmt = $finance->db->conn->prepare("SELECT * FROM transactions WHERE id = ? AND user_id = ?");
-            $stmt->bind_param("ii", $transaction_id, $user_id);
-            $stmt->execute();
-            $old_transaction = $stmt->get_result()->fetch_assoc();
-
-            if (!$old_transaction) {
-                echo json_encode(['success' => false, 'message' => 'Transaction not found']);
+            if ($amount <= 0) {
+                echo json_encode(['success' => false, 'message' => 'Amount must be greater than zero']);
                 break;
             }
 
-            // Start transaction for data consistency
-            $finance->db->conn->begin_transaction();
-
-            try {
-                // Reverse old transaction effect
-                $old_balance_change = ($old_transaction['type'] === 'income') ? -$old_transaction['amount'] : $old_transaction['amount'];
-                $stmt = $finance->db->conn->prepare("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ? AND user_id = ?");
-                $stmt->bind_param("dii", $old_balance_change, $old_transaction['account_id'], $user_id);
-                $stmt->execute();
-
-                // Update transaction
-                $stmt = $finance->db->conn->prepare("
-                    UPDATE transactions 
-                    SET account_id = ?, type = ?, amount = ?, description = ?, category = ?, transaction_date = ? 
-                    WHERE id = ? AND user_id = ?
-                ");
-                $stmt->bind_param("isdsssii", $account_id, $type, $amount, $description, $category, $transaction_date, $transaction_id, $user_id);
-                $stmt->execute();
-
-                // Apply new transaction effect
-                $new_balance_change = ($type === 'income') ? $amount : -$amount;
-                $stmt = $finance->db->conn->prepare("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ? AND user_id = ?");
-                $stmt->bind_param("dii", $new_balance_change, $account_id, $user_id);
-                $stmt->execute();
-
-                $finance->db->conn->commit();
-                echo json_encode(['success' => true, 'message' => 'Transaction updated successfully']);
-            } catch (Exception $e) {
-                $finance->db->conn->rollback();
-                echo json_encode(['success' => false, 'message' => 'Failed to update transaction']);
+            if (!in_array($type, ['income', 'expense'], true)) {
+                echo json_encode(['success' => false, 'message' => 'Invalid transaction type']);
+                break;
             }
+
+            $result = $finance->updateTransaction($transaction_id, $user_id, $account_id, $type, $amount, $description, $category, $transaction_date);
+            echo json_encode($result);
             break;
 
         case 'delete_transaction':
-            $transaction_id = $_POST['transaction_id'] ?? '';
-
-            // First get transaction details
-            $stmt = $finance->db->conn->prepare("SELECT * FROM transactions WHERE id = ? AND user_id = ?");
-            $stmt->bind_param("ii", $transaction_id, $user_id);
-            $stmt->execute();
-            $transaction = $stmt->get_result()->fetch_assoc();
-
-            if (!$transaction) {
-                echo json_encode(['success' => false, 'message' => 'Transaction not found']);
-                break;
-            }
-
-            // Start transaction
-            $finance->db->conn->begin_transaction();
-
-            try {
-                // Reverse transaction effect on account balance
-                $balance_change = ($transaction['type'] === 'income') ? -$transaction['amount'] : $transaction['amount'];
-                $stmt = $finance->db->conn->prepare("UPDATE accounts SET current_balance = current_balance + ? WHERE id = ? AND user_id = ?");
-                $stmt->bind_param("dii", $balance_change, $transaction['account_id'], $user_id);
-                $stmt->execute();
-
-                // Delete transaction
-                $stmt = $finance->db->conn->prepare("DELETE FROM transactions WHERE id = ? AND user_id = ?");
-                $stmt->bind_param("ii", $transaction_id, $user_id);
-                $stmt->execute();
-
-                $finance->db->conn->commit();
-                echo json_encode(['success' => true, 'message' => 'Transaction deleted successfully']);
-            } catch (Exception $e) {
-                $finance->db->conn->rollback();
-                echo json_encode(['success' => false, 'message' => 'Failed to delete transaction']);
-            }
+            $transaction_id = intval($_POST['transaction_id'] ?? 0);
+            $result = $finance->deleteTransaction($transaction_id, $user_id);
+            echo json_encode($result);
             break;
 
         default:
@@ -148,12 +104,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
 
         case 'get_transaction':
-            $transaction_id = $_GET['transaction_id'] ?? '';
-
-            $stmt = $finance->db->conn->prepare("SELECT * FROM transactions WHERE id = ? AND user_id = ?");
-            $stmt->bind_param("ii", $transaction_id, $user_id);
-            $stmt->execute();
-            $transaction = $stmt->get_result()->fetch_assoc();
+            $transaction_id = intval($_GET['transaction_id'] ?? 0);
+            $transaction = $finance->getTransaction($transaction_id, $user_id);
 
             if ($transaction) {
                 echo json_encode(['success' => true, 'transaction' => $transaction]);

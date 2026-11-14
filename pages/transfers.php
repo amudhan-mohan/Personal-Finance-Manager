@@ -10,53 +10,78 @@ if (!$auth->isLoggedIn()) {
 
 $finance = new FinanceManager();
 $user_id = $auth->getUserId();
+$csrf_token = $auth->generateCSRFToken();
 
-// Handle form submissions
+// Handle form submissions (Post-Redirect-Get Pattern to prevent F5 resubmission)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['make_transfer'])) {
-        $from_account_id = $_POST['from_account_id'];
-        $to_account_id = $_POST['to_account_id'];
-        $amount = $_POST['amount'];
-        $description = $_POST['description'];
-        $transfer_date = $_POST['transfer_date'];
-
-        $result = $finance->transferFunds($user_id, $from_account_id, $to_account_id, $amount, $description, $transfer_date);
-        $message = [
-            'type' => $result['success'] ? 'success' : 'error',
-            'text' => $result['message']
+    if (!$auth->validateCSRFRequest()) {
+        $_SESSION['flash_toast'] = [
+            'title' => 'Action Failed',
+            'message' => 'Security token invalid or expired. Please try again.',
+            'type' => 'error'
         ];
+    } else {
+        if (isset($_POST['make_transfer'])) {
+            $from_account_id = intval($_POST['from_account_id'] ?? 0);
+            $to_account_id = intval($_POST['to_account_id'] ?? 0);
+            $amount = floatval($_POST['amount'] ?? 0);
+            $description = trim($_POST['description'] ?? '');
+            $transfer_date = $_POST['transfer_date'] ?? date('Y-m-d');
+
+            if ($amount <= 0) {
+                $_SESSION['flash_toast'] = ['title' => 'Action Failed', 'message' => 'Transfer amount must be greater than zero!', 'type' => 'error'];
+            } elseif ($from_account_id === $to_account_id) {
+                $_SESSION['flash_toast'] = ['title' => 'Action Failed', 'message' => 'Cannot transfer to the same account!', 'type' => 'error'];
+            } else {
+                $result = $finance->transferFunds($user_id, $from_account_id, $to_account_id, $amount, $description, $transfer_date);
+                $_SESSION['flash_toast'] = [
+                    'title' => $result['success'] ? 'Successfully Completed' : 'Action Failed',
+                    'message' => $result['message'],
+                    'type' => $result['success'] ? 'success' : 'error'
+                ];
+            }
+        }
+
+        if (isset($_POST['update_transfer'])) {
+            $transfer_id = intval($_POST['transfer_id'] ?? 0);
+            $from_account_id = intval($_POST['from_account_id'] ?? 0);
+            $to_account_id = intval($_POST['to_account_id'] ?? 0);
+            $amount = floatval($_POST['amount'] ?? 0);
+            $description = trim($_POST['description'] ?? '');
+            $transfer_date = $_POST['transfer_date'] ?? date('Y-m-d');
+
+            if ($amount <= 0) {
+                $_SESSION['flash_toast'] = ['title' => 'Action Failed', 'message' => 'Transfer amount must be greater than zero!', 'type' => 'error'];
+            } elseif ($from_account_id === $to_account_id) {
+                $_SESSION['flash_toast'] = ['title' => 'Action Failed', 'message' => 'Cannot transfer to the same account!', 'type' => 'error'];
+            } else {
+                $result = $finance->updateTransfer($transfer_id, $user_id, $from_account_id, $to_account_id, $amount, $description, $transfer_date);
+                $_SESSION['flash_toast'] = [
+                    'title' => $result['success'] ? 'Successfully Completed' : 'Action Failed',
+                    'message' => $result['message'],
+                    'type' => $result['success'] ? 'success' : 'error'
+                ];
+            }
+        }
+
+        if (isset($_POST['delete_transfer'])) {
+            $transfer_id = intval($_POST['transfer_id'] ?? 0);
+            $result = $finance->deleteTransfer($transfer_id, $user_id);
+            $_SESSION['flash_toast'] = [
+                'title' => $result['success'] ? 'Successfully Completed' : 'Action Failed',
+                'message' => $result['message'],
+                'type' => $result['success'] ? 'success' : 'error'
+            ];
+        }
     }
-
-    if (isset($_POST['update_transfer'])) {
-        $transfer_id = $_POST['transfer_id'];
-        $from_account_id = $_POST['from_account_id'];
-        $to_account_id = $_POST['to_account_id'];
-        $amount = $_POST['amount'];
-        $description = $_POST['description'];
-        $transfer_date = $_POST['transfer_date'];
-
-        $result = $finance->updateTransfer($transfer_id, $user_id, $from_account_id, $to_account_id, $amount, $description, $transfer_date);
-        $message = [
-            'type' => $result['success'] ? 'success' : 'error',
-            'text' => $result['message']
-        ];
-    }
-}
-
-// Handle delete action
-if (isset($_GET['delete_transfer'])) {
-    $transfer_id = $_GET['delete_transfer'];
-    $result = $finance->deleteTransfer($transfer_id, $user_id);
-    $message = [
-        'type' => $result['success'] ? 'success' : 'error',
-        'text' => $result['message']
-    ];
+    header('Location: transfers.php');
+    exit;
 }
 
 // Get transfer for editing
 $edit_transfer = null;
 if (isset($_GET['edit_transfer'])) {
-    $edit_transfer = $finance->getTransfer($_GET['edit_transfer'], $user_id);
+    $edit_transfer = $finance->getTransfer(intval($_GET['edit_transfer']), $user_id);
 }
 
 $accounts = $finance->getAccounts($user_id);
@@ -67,32 +92,42 @@ $recent_transfers = $finance->getTransfers($user_id, $_GET);
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Transfer Funds - <?php echo SITE_NAME; ?></title>
-    <link rel="icon" href="/assets/img/logo.svg" data-next-head=""/>
-    <link rel="stylesheet" href="/assets/css/tailwind.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Transfers - <?php echo SITE_NAME; ?></title>
+    <link rel="icon" href="../assets/img/logo.svg" data-next-head=""/>
+    <link rel="stylesheet" href="../assets/css/tailwind.css?v=<?php echo asset_version(); ?>">
 </head>
 
-<body class="bg-gray-100">
+<body class="bg-slate-50 min-h-screen text-slate-900 font-sans antialiased">
     <?php include __DIR__ . '/../includes/header.php'; ?>
 
-    <div class="container mx-auto px-4 py-8">
-        <h1 class="text-3xl font-bold text-gray-800 mb-8">Transfer Funds</h1>
-
-        <?php if (isset($message)): ?>
-            <div class="mb-4 p-4 rounded-md <?php echo $message['type'] === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'; ?>">
-                <?php echo $message['text']; ?>
-            </div>
-        <?php endif; ?>
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Header -->
+        <div class="mb-8 pb-6 border-b border-slate-200">
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">Inter-Account Transfers</h1>
+            <p class="text-sm text-slate-500 mt-1">Reallocate capital between institutional banking accounts and operational cash reserves.</p>
+        </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <!-- Transfer Form -->
             <div class="lg:col-span-1">
-                <div class="bg-white rounded-lg shadow-md p-6">
-                    <h3 class="text-xl font-semibold mb-4">
-                        <?php echo $edit_transfer ? 'Edit Transfer' : 'Make Transfer'; ?>
-                    </h3>
+                <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
+                    <div class="flex items-center space-x-2.5 mb-5 pb-3 border-b border-slate-100">
+                        <div class="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-slate-700">
+                            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                <path d="M17 2l4 4-4 4"/>
+                                <path d="M3 6h18"/>
+                                <path d="M7 22l-4-4 4-4"/>
+                                <path d="M21 18H3"/>
+                            </svg>
+                        </div>
+                        <h2 class="text-base font-bold text-slate-900">
+                            <?php echo $edit_transfer ? 'Edit Transfer' : 'Execute Transfer'; ?>
+                        </h2>
+                    </div>
+
                     <form method="POST" class="space-y-4" id="transferForm">
+                        <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
                         <?php if ($edit_transfer): ?>
                             <input type="hidden" name="update_transfer" value="1">
                             <input type="hidden" name="transfer_id" value="<?php echo $edit_transfer['id']; ?>">
@@ -101,71 +136,86 @@ $recent_transfers = $finance->getTransfers($user_id, $_GET);
                         <?php endif; ?>
 
                         <div>
-                            <label for="from_account_id" class="block text-sm font-medium text-gray-700">From Account</label>
+                            <label for="from_account_id" class="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">Source Portfolio (From)</label>
                             <select id="from_account_id" name="from_account_id" required
-                                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                                onchange="updateFromAccountBalance()">
-                                <option value="">Select Source Account</option>
-                                <?php while ($account = $accounts->fetch_assoc()): ?>
+                                class="w-full px-3.5 py-2.5 text-base md:text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition bg-white text-slate-900"
+                                onchange="onSourceAccountChange()">
+                                <option value="">Select source account</option>
+                                <?php
+                                $accounts->data_seek(0);
+                                while ($account = $accounts->fetch_assoc()): ?>
                                     <option value="<?php echo $account['id']; ?>"
                                         data-balance="<?php echo $account['current_balance']; ?>"
                                         <?php echo ($edit_transfer && $edit_transfer['from_account_id'] == $account['id']) ? 'selected' : ''; ?>>
-                                        <?php echo htmlspecialchars($account['name']); ?> (<?php echo $account['type']; ?>)
+                                        <?php echo htmlspecialchars($account['name']); ?> (<?php echo ucfirst($account['type']); ?>)
                                         - ₹<?php echo number_format($account['current_balance'], 2); ?>
                                     </option>
                                 <?php endwhile; ?>
                             </select>
-                            <div id="fromAccountBalance" class="text-sm text-gray-500 mt-1"></div>
+                            <div id="fromAccountBalance" class="text-xs text-slate-500 mt-1"></div>
                         </div>
 
                         <div>
-                            <label for="to_account_id" class="block text-sm font-medium text-gray-700">To Account</label>
+                            <label for="to_account_id" class="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">Destination Portfolio (To)</label>
                             <select id="to_account_id" name="to_account_id" required
-                                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
-                                <option value="">Select Destination Account</option>
+                                class="w-full px-3.5 py-2.5 text-base md:text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition bg-white text-slate-900"
+                                onchange="onDestinationAccountChange()">
+                                <option value="">Select destination account</option>
                                 <?php
                                 $accounts->data_seek(0);
                                 while ($account = $accounts->fetch_assoc()): ?>
                                     <option value="<?php echo $account['id']; ?>"
                                         <?php echo ($edit_transfer && $edit_transfer['to_account_id'] == $account['id']) ? 'selected' : ''; ?>>
-                                        <?php echo htmlspecialchars($account['name']); ?> (<?php echo $account['type']; ?>)
+                                        <?php echo htmlspecialchars($account['name']); ?> (<?php echo ucfirst($account['type']); ?>)
                                     </option>
                                 <?php endwhile; ?>
                             </select>
+                            <div id="accountMatchError" class="hidden text-xs font-semibold text-rose-600 mt-1.5 items-center space-x-1">
+                                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <line x1="12" y1="8" x2="12" y2="12"/>
+                                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                                </svg>
+                                <span>Source and destination accounts cannot be identical.</span>
+                            </div>
                         </div>
 
                         <div>
-                            <label for="amount" class="block text-sm font-medium text-gray-700">Amount</label>
-                            <input type="number" id="amount" name="amount" step="0.01" min="0.01" required
-                                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                                value="<?php echo $edit_transfer ? $edit_transfer['amount'] : ''; ?>"
-                                onchange="validateAmount()">
-                            <div id="amountError" class="text-sm text-red-600 mt-1 hidden"></div>
+                            <label for="amount" class="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">Transfer Amount (INR)</label>
+                            <div class="relative">
+                                <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-400 font-bold">₹</span>
+                                <input type="number" id="amount" name="amount" step="0.01" min="0.01" required
+                                    class="w-full pl-8 pr-3.5 py-2.5 text-base md:text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition bg-white text-slate-900 placeholder:text-slate-400"
+                                    value="<?php echo $edit_transfer ? htmlspecialchars($edit_transfer['amount']) : ''; ?>"
+                                    oninput="validateAmount()"
+                                    placeholder="0.00">
+                            </div>
+                            <div id="amountError" class="text-xs font-medium text-rose-600 mt-1 hidden"></div>
                         </div>
 
                         <div>
-                            <label for="description" class="block text-sm font-medium text-gray-700">Description</label>
+                            <label for="description" class="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">Reference / Memo</label>
                             <input type="text" id="description" name="description"
-                                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                                placeholder="e.g., Monthly transfer, Emergency fund, etc."
+                                class="w-full px-3.5 py-2.5 text-base md:text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition bg-white text-slate-900 placeholder:text-slate-400"
+                                placeholder="e.g., ATM Cash withdrawal, Payroll balance top-up"
                                 value="<?php echo $edit_transfer ? htmlspecialchars($edit_transfer['description']) : ''; ?>">
                         </div>
 
                         <div>
-                            <label for="transfer_date" class="block text-sm font-medium text-gray-700">Transfer Date</label>
+                            <label for="transfer_date" class="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">Transfer Date</label>
                             <input type="date" id="transfer_date" name="transfer_date" required
-                                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                                value="<?php echo $edit_transfer ? $edit_transfer['transfer_date'] : date('Y-m-d'); ?>">
+                                class="w-full px-3.5 py-2.5 text-base md:text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 transition bg-white text-slate-900"
+                                value="<?php echo $edit_transfer ? htmlspecialchars($edit_transfer['transfer_date']) : date('Y-m-d'); ?>">
                         </div>
 
-                        <div class="flex space-x-3">
+                        <div class="flex space-x-2.5 pt-2">
                             <button type="submit" id="transferButton"
-                                class="flex-1 bg-purple-600 text-white py-2 px-4 rounded-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed">
-                                <?php echo $edit_transfer ? 'Update Transfer' : 'Transfer Funds'; ?>
+                                class="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2.5 px-4 rounded-lg text-xs font-semibold uppercase tracking-wider transition shadow-xs">
+                                <?php echo $edit_transfer ? 'Save Transfer' : 'Execute Transfer'; ?>
                             </button>
                             <?php if ($edit_transfer): ?>
                                 <a href="transfers.php"
-                                    class="flex-1 bg-gray-600 text-white text-center py-2 px-4 rounded-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2">
+                                    class="px-4 py-2.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 rounded-lg text-xs font-semibold uppercase tracking-wider transition">
                                     Cancel
                                 </a>
                             <?php endif; ?>
@@ -174,126 +224,122 @@ $recent_transfers = $finance->getTransfers($user_id, $_GET);
                 </div>
             </div>
 
-            <!-- Transfer History and Quick Transfers -->
+            <!-- Transfer History -->
             <div class="lg:col-span-2">
-                <!-- Quick Transfer Templates -->
-                <?php if (!$edit_transfer): ?>
-                    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-                        <h3 class="text-xl font-semibold mb-4">Quick Transfers</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <!-- Bank to Cash -->
-                            <div class="border border-gray-200 rounded-lg p-4">
-                                <h4 class="font-semibold text-gray-800 mb-2">Bank → Cash</h4>
-                                <p class="text-sm text-gray-600 mb-3">Withdraw cash from bank account</p>
-                                <button onclick="setQuickTransfer('bank_to_cash')"
-                                    class="w-full bg-blue-100 text-blue-700 py-2 px-4 rounded-md hover:bg-blue-200 text-sm">
-                                    Use This Template
-                                </button>
-                            </div>
-
-                            <!-- Cash to Bank -->
-                            <div class="border border-gray-200 rounded-lg p-4">
-                                <h4 class="font-semibold text-gray-800 mb-2">Cash → Bank</h4>
-                                <p class="text-sm text-gray-600 mb-3">Deposit cash to bank account</p>
-                                <button onclick="setQuickTransfer('cash_to_bank')"
-                                    class="w-full bg-green-100 text-green-700 py-2 px-4 rounded-md hover:bg-green-200 text-sm">
-                                    Use This Template
-                                </button>
-                            </div>
-
-                            <!-- Bank to Bank -->
-                            <div class="border border-gray-200 rounded-lg p-4">
-                                <h4 class="font-semibold text-gray-800 mb-2">Bank → Bank</h4>
-                                <p class="text-sm text-gray-600 mb-3">Transfer between bank accounts</p>
-                                <button onclick="setQuickTransfer('bank_to_bank')"
-                                    class="w-full bg-purple-100 text-purple-700 py-2 px-4 rounded-md hover:bg-purple-200 text-sm">
-                                    Use This Template
-                                </button>
-                            </div>
-
-                            <!-- Cash to Cash -->
-                            <div class="border border-gray-200 rounded-lg p-4">
-                                <h4 class="font-semibold text-gray-800 mb-2">Cash → Cash</h4>
-                                <p class="text-sm text-gray-600 mb-3">Transfer between cash wallets</p>
-                                <button onclick="setQuickTransfer('cash_to_cash')"
-                                    class="w-full bg-yellow-100 text-yellow-700 py-2 px-4 rounded-md hover:bg-yellow-200 text-sm">
-                                    Use This Template
-                                </button>
-                            </div>
-                        </div>
+                <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
+                    <div class="flex items-center justify-between mb-5">
+                        <h2 class="text-base font-bold text-slate-900">Transfer Journal</h2>
+                        <span class="text-xs text-slate-500 font-medium"><?php echo $recent_transfers->num_rows; ?> transfers logged</span>
                     </div>
-                <?php endif; ?>
-
-                <!-- Recent Transfers -->
-                <div class="bg-white rounded-lg shadow-md p-6">
-                    <h3 class="text-xl font-semibold mb-4">Transfer History</h3>
 
                     <?php if ($recent_transfers->num_rows > 0): ?>
-                        <div class="overflow-x-auto">
-                            <table class="min-w-full divide-y divide-gray-200">
-                                <thead class="bg-gray-50">
-                                    <tr>
-                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">S.No</th>
-                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From → To</th>
-                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        <!-- Mobile / WebView Card List (< md screens) -->
+                        <div class="block md:hidden space-y-3 max-h-[520px] overflow-y-auto pr-1 inscrolling-table-container">
+                            <?php
+                            $recent_transfers->data_seek(0);
+                            $mob_tr_sno = 1;
+                            while ($transfer = $recent_transfers->fetch_assoc()): ?>
+                                <div class="p-4 bg-slate-50 rounded-xl border border-slate-200 hover:border-slate-300 transition">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <div class="flex items-center space-x-2">
+                                            <span class="text-xs text-slate-400 font-mono">#<?php echo $mob_tr_sno++; ?></span>
+                                            <span class="font-bold text-slate-900 text-sm">₹<?php echo number_format($transfer['amount'], 2); ?></span>
+                                        </div>
+                                        <span class="text-[11px] text-slate-500"><?php echo date('M j, Y', strtotime($transfer['transfer_date'])); ?></span>
+                                    </div>
+                                    <div class="flex items-center text-xs text-slate-800 font-medium mt-1">
+                                        <span class="truncate"><?php echo htmlspecialchars($transfer['from_account_name']); ?></span>
+                                        <svg class="h-3 w-3 mx-1 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                            <line x1="5" y1="12" x2="19" y2="12"/>
+                                            <polyline points="12 5 19 12 12 19"/>
+                                        </svg>
+                                        <span class="truncate"><?php echo htmlspecialchars($transfer['to_account_name']); ?></span>
+                                    </div>
+                                    <?php if ($transfer['description']): ?>
+                                        <p class="text-xs text-slate-500 mt-1"><?php echo htmlspecialchars($transfer['description']); ?></p>
+                                    <?php endif; ?>
+                                    <div class="flex justify-end space-x-2 mt-3 pt-2.5 border-t border-slate-200/80">
+                                        <a href="?edit_transfer=<?php echo $transfer['id']; ?>"
+                                            class="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 rounded-lg transition" title="Edit">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                                <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                            </svg>
+                                        </a>
+                                        <form method="POST" class="inline" onsubmit="return confirm('Are you sure you want to delete this transfer?')">
+                                            <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
+                                            <input type="hidden" name="delete_transfer" value="1">
+                                            <input type="hidden" name="transfer_id" value="<?php echo $transfer['id']; ?>">
+                                            <button type="submit" class="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition" title="Delete">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                                    <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                </svg>
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                            <?php endwhile; ?>
+                        </div>
+
+                        <!-- Desktop Table (md+ screens) with Fixed Height & Inner Scrolling -->
+                        <div class="hidden md:block overflow-x-auto max-h-[520px] overflow-y-auto border border-slate-200 rounded-xl inscrolling-table-container">
+                            <table class="min-w-full divide-y divide-slate-200">
+                                <thead class="sticky top-0 z-10 bg-slate-50 border-b border-slate-200">
+                                    <tr class="bg-slate-50 text-slate-500 uppercase text-[11px] font-semibold tracking-wider text-left">
+                                        <th class="px-4 py-3 bg-slate-50">S.No</th>
+                                        <th class="px-4 py-3 bg-slate-50">Date</th>
+                                        <th class="px-4 py-3 bg-slate-50">Amount</th>
+                                        <th class="px-4 py-3 bg-slate-50">Source &rarr; Target</th>
+                                        <th class="px-4 py-3 bg-slate-50">Reference</th>
+                                        <th class="px-4 py-3 text-right bg-slate-50">Actions</th>
                                     </tr>
                                 </thead>
-                                <tbody class="bg-white divide-y divide-gray-200">
-                                    <?php $sno = 1;
+                                <tbody class="divide-y divide-slate-200">
+                                    <?php
+                                    $recent_transfers->data_seek(0);
+                                    $sno = 1;
                                     while ($transfer = $recent_transfers->fetch_assoc()): ?>
-                                        <tr>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500"><?php echo $sno++; ?></td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        <tr class="hover:bg-slate-50 transition">
+                                            <td class="px-4 py-3.5 text-xs text-slate-400 font-mono"><?php echo $sno++; ?></td>
+                                            <td class="px-4 py-3.5 text-xs font-medium text-slate-600">
                                                 <?php echo date('M j, Y', strtotime($transfer['transfer_date'])); ?>
                                             </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-purple-600">
+                                            <td class="px-4 py-3.5 text-sm font-bold text-slate-900">
                                                 ₹<?php echo number_format($transfer['amount'], 2); ?>
                                             </td>
-                                            <td class="px-6 py-4 whitespace-nowrap">
-                                                <div class="text-sm font-medium text-gray-900">
-                                                    <?php echo htmlspecialchars($transfer['from_account_name']); ?>
-                                                    <span class="text-gray-400 mx-2">→</span>
-                                                    <?php echo htmlspecialchars($transfer['to_account_name']); ?>
-                                                </div>
-                                                <div class="text-xs text-gray-500">
-                                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium 
-                                                <?php echo $transfer['from_account_type'] === 'bank' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'; ?>">
-                                                        <?php echo ucfirst($transfer['from_account_type']); ?>
-                                                    </span>
-                                                    <span class="mx-1">→</span>
-                                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium 
-                                                <?php echo $transfer['to_account_type'] === 'bank' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'; ?>">
-                                                        <?php echo ucfirst($transfer['to_account_type']); ?>
-                                                    </span>
+                                            <td class="px-4 py-3.5">
+                                                <div class="flex items-center text-xs font-semibold text-slate-900">
+                                                    <span><?php echo htmlspecialchars($transfer['from_account_name']); ?></span>
+                                                    <svg class="h-3.5 w-3.5 mx-1.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                                        <line x1="5" y1="12" x2="19" y2="12"/>
+                                                        <polyline points="12 5 19 12 12 19"/>
+                                                    </svg>
+                                                    <span><?php echo htmlspecialchars($transfer['to_account_name']); ?></span>
                                                 </div>
                                             </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                <?php echo htmlspecialchars($transfer['description'] ?: 'No description'); ?>
+                                            <td class="px-4 py-3.5 text-xs text-slate-500">
+                                                <?php echo htmlspecialchars($transfer['description'] ?: 'Fund reallocation'); ?>
                                             </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                                <div class="flex items-center space-x-3">
-                                                    <!-- Edit Icon -->
+                                            <td class="px-4 py-3.5 text-right">
+                                                <div class="inline-flex items-center space-x-1">
                                                     <a href="?edit_transfer=<?php echo $transfer['id']; ?>"
-                                                        class="text-blue-600 hover:text-blue-900 transition-colors duration-200" title="Edit Transfer">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                        class="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
+                                                        title="Edit Transfer">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                                            <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                                                         </svg>
                                                     </a>
-
-                                                    <!-- Delete Icon -->
-                                                    <a href="?delete_transfer=<?php echo $transfer['id']; ?>"
-                                                        class="text-red-600 hover:text-red-900 transition-colors duration-200"
-                                                        onclick="return confirm('Are you sure you want to delete this transfer?')"
-                                                        title="Delete Transfer">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                        </svg>
-                                                    </a>
+                                                    <form method="POST" class="inline" onsubmit="return confirm('Are you sure you want to delete this transfer?')">
+                                                        <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
+                                                        <input type="hidden" name="delete_transfer" value="1">
+                                                        <input type="hidden" name="transfer_id" value="<?php echo $transfer['id']; ?>">
+                                                        <button type="submit"
+                                                            class="p-1.5 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition"
+                                                            title="Delete Transfer">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                                                <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                            </svg>
+                                                        </button>
+                                                    </form>
                                                 </div>
                                             </td>
                                         </tr>
@@ -302,63 +348,125 @@ $recent_transfers = $finance->getTransfers($user_id, $_GET);
                             </table>
                         </div>
                     <?php else: ?>
-                        <div class="text-center py-8">
-                            <p class="text-gray-500">No transfers yet. Make your first transfer!</p>
+                        <div class="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-300">
+                            <p class="text-xs text-slate-500">No transfers recorded yet.</p>
                         </div>
                     <?php endif; ?>
                 </div>
             </div>
         </div>
-    </div>
+    </main>
 
     <?php include __DIR__ . '/../includes/footer.php'; ?>
 
     <script>
-        let accountsData = [];
+        function syncBidirectionalAccounts() {
+            const fromSelect = document.getElementById('from_account_id');
+            const toSelect = document.getElementById('to_account_id');
+            const fromVal = fromSelect.value;
+            const toVal = toSelect.value;
 
-        // Load accounts data for JavaScript
-        <?php
-        $accounts->data_seek(0);
-        while ($account = $accounts->fetch_assoc()): ?>
-            accountsData.push({
-                id: <?php echo $account['id']; ?>,
-                name: '<?php echo $account['name']; ?>',
-                type: '<?php echo $account['type']; ?>',
-                balance: <?php echo $account['current_balance']; ?>
+            // 1. In Destination dropdown, disable the option chosen in Source
+            Array.from(toSelect.options).forEach(opt => {
+                if (!opt.value) return; // Keep placeholder
+                if (fromVal && opt.value === fromVal) {
+                    opt.disabled = true;
+                    opt.classList.add('text-slate-300', 'bg-slate-100');
+                    if (toSelect.value === fromVal) {
+                        toSelect.value = '';
+                    }
+                } else {
+                    opt.disabled = false;
+                    opt.classList.remove('text-slate-300', 'bg-slate-100');
+                }
             });
-        <?php endwhile; ?>
 
-        function updateFromAccountBalance() {
+            // 2. In Source dropdown, disable the option chosen in Destination
+            Array.from(fromSelect.options).forEach(opt => {
+                if (!opt.value) return; // Keep placeholder
+                if (toVal && opt.value === toVal) {
+                    opt.disabled = true;
+                    opt.classList.add('text-slate-300', 'bg-slate-100');
+                    if (fromSelect.value === toVal) {
+                        fromSelect.value = '';
+                    }
+                } else {
+                    opt.disabled = false;
+                    opt.classList.remove('text-slate-300', 'bg-slate-100');
+                }
+            });
+
+            validateAccounts();
+        }
+
+        function onSourceAccountChange() {
             const fromAccountSelect = document.getElementById('from_account_id');
             const balanceDisplay = document.getElementById('fromAccountBalance');
             const selectedOption = fromAccountSelect.options[fromAccountSelect.selectedIndex];
 
-            if (selectedOption.value) {
+            if (selectedOption && selectedOption.value) {
                 const balance = selectedOption.getAttribute('data-balance');
-                balanceDisplay.textContent = `Available balance: ₹${parseFloat(balance).toFixed(2)}`;
-                balanceDisplay.className = 'text-sm text-green-600 mt-1';
+                balanceDisplay.textContent = `Available: ₹${parseFloat(balance).toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
+                balanceDisplay.className = 'text-xs font-semibold text-emerald-700 mt-1';
             } else {
                 balanceDisplay.textContent = '';
             }
-            validateAmount();
+
+            syncBidirectionalAccounts();
+        }
+
+        function onDestinationAccountChange() {
+            syncBidirectionalAccounts();
+        }
+
+        function validateAccounts() {
+            const fromSelect = document.getElementById('from_account_id');
+            const toSelect = document.getElementById('to_account_id');
+            const matchError = document.getElementById('accountMatchError');
+            const transferButton = document.getElementById('transferButton');
+
+            const isSame = fromSelect.value && toSelect.value && (fromSelect.value === toSelect.value);
+
+            if (isSame) {
+                matchError.classList.remove('hidden');
+                matchError.classList.add('flex');
+                toSelect.classList.add('border-rose-500', 'ring-1', 'ring-rose-500');
+                fromSelect.classList.add('border-rose-500', 'ring-1', 'ring-rose-500');
+                transferButton.disabled = true;
+                return false;
+            } else {
+                matchError.classList.add('hidden');
+                matchError.classList.remove('flex');
+                toSelect.classList.remove('border-rose-500', 'ring-1', 'ring-rose-500');
+                fromSelect.classList.remove('border-rose-500', 'ring-1', 'ring-rose-500');
+                validateAmount();
+                return true;
+            }
         }
 
         function validateAmount() {
             const fromAccountSelect = document.getElementById('from_account_id');
+            const toAccountSelect = document.getElementById('to_account_id');
             const amountInput = document.getElementById('amount');
             const amountError = document.getElementById('amountError');
             const transferButton = document.getElementById('transferButton');
 
+            // Block if accounts are invalid or same
+            if (!fromAccountSelect.value || !toAccountSelect.value || fromAccountSelect.value === toAccountSelect.value) {
+                transferButton.disabled = true;
+                return;
+            }
+
             const selectedOption = fromAccountSelect.options[fromAccountSelect.selectedIndex];
-            const balance = selectedOption.value ? parseFloat(selectedOption.getAttribute('data-balance')) : 0;
+            const balance = selectedOption && selectedOption.value ? parseFloat(selectedOption.getAttribute('data-balance')) : 0;
             const amount = parseFloat(amountInput.value) || 0;
 
-            if (amount > balance) {
-                amountError.textContent = 'Amount exceeds available balance';
+            if (amount <= 0) {
+                amountError.textContent = 'Amount must be greater than zero.';
                 amountError.classList.remove('hidden');
                 transferButton.disabled = true;
-            } else if (amount <= 0) {
-                amountError.textContent = 'Amount must be greater than 0';
+            } else if (amount > balance) {
+                amountError.textContent = 'Amount exceeds available source balance.';
                 amountError.classList.remove('hidden');
                 transferButton.disabled = true;
             } else {
@@ -367,62 +475,23 @@ $recent_transfers = $finance->getTransfers($user_id, $_GET);
             }
         }
 
-        function setQuickTransfer(type) {
-            const bankAccounts = accountsData.filter(acc => acc.type === 'bank');
-            const cashAccounts = accountsData.filter(acc => acc.type === 'cash');
-
-            let fromAccount, toAccount;
-
-            switch (type) {
-                case 'bank_to_cash':
-                    if (bankAccounts.length > 0 && cashAccounts.length > 0) {
-                        fromAccount = bankAccounts[0];
-                        toAccount = cashAccounts[0];
-                    }
-                    break;
-                case 'cash_to_bank':
-                    if (cashAccounts.length > 0 && bankAccounts.length > 0) {
-                        fromAccount = cashAccounts[0];
-                        toAccount = bankAccounts[0];
-                    }
-                    break;
-                case 'bank_to_bank':
-                    if (bankAccounts.length > 1) {
-                        fromAccount = bankAccounts[0];
-                        toAccount = bankAccounts[1];
-                    }
-                    break;
-                case 'cash_to_cash':
-                    if (cashAccounts.length > 1) {
-                        fromAccount = cashAccounts[0];
-                        toAccount = cashAccounts[1];
-                    }
-                    break;
+        document.getElementById('transferForm').addEventListener('submit', function(e) {
+            if (!validateAccounts()) {
+                e.preventDefault();
+                return false;
             }
-
-            if (fromAccount && toAccount) {
-                document.getElementById('from_account_id').value = fromAccount.id;
-                document.getElementById('to_account_id').value = toAccount.id;
-                document.getElementById('description').value = getDefaultDescription(type);
-                updateFromAccountBalance();
-            } else {
-                alert('Not enough accounts for this transfer type. Please create more accounts.');
+            const amountInput = document.getElementById('amount');
+            const amount = parseFloat(amountInput.value) || 0;
+            if (amount <= 0) {
+                e.preventDefault();
+                validateAmount();
+                return false;
             }
-        }
+        });
 
-        function getDefaultDescription(type) {
-            const descriptions = {
-                'bank_to_cash': 'Cash withdrawal',
-                'cash_to_bank': 'Cash deposit',
-                'bank_to_bank': 'Inter-bank transfer',
-                'cash_to_cash': 'Cash transfer between wallets'
-            };
-            return descriptions[type] || 'Fund transfer';
-        }
-
-        // Initialize form validation
         document.addEventListener('DOMContentLoaded', function() {
-            validateAmount();
+            onSourceAccountChange();
+            syncBidirectionalAccounts();
         });
     </script>
 </body>

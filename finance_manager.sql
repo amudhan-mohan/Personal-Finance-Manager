@@ -16,11 +16,71 @@ CREATE TABLE `accounts` (
   `id` int(11) NOT NULL,
   `user_id` int(11) DEFAULT NULL,
   `name` varchar(100) NOT NULL,
-  `type` enum('bank','cash') NOT NULL,
+  `type` enum('bank','cash','credit_card','investment','loan') NOT NULL DEFAULT 'bank',
   `initial_balance` decimal(10,2) DEFAULT 0.00,
   `current_balance` decimal(10,2) DEFAULT 0.00,
+  `credit_limit` decimal(10,2) DEFAULT NULL,
+  `interest_rate` decimal(5,2) DEFAULT NULL,
+  `due_day` int(11) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `deleted_at` timestamp NULL DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `budgets`
+--
+
+CREATE TABLE `budgets` (
+  `id` int(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `user_id` int(11) NOT NULL,
+  `category` varchar(50) NOT NULL,
+  `monthly_limit` decimal(10,2) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  UNIQUE KEY `user_category_budget` (`user_id`, `category`),
+  INDEX `idx_user_budget` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `recurring_bills`
+--
+
+CREATE TABLE `recurring_bills` (
+  `id` int(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `user_id` int(11) NOT NULL,
+  `account_id` int(11) NOT NULL,
+  `title` varchar(100) NOT NULL,
+  `amount` decimal(10,2) NOT NULL,
+  `category` varchar(50) NOT NULL,
+  `frequency` enum('weekly','monthly','quarterly','yearly') DEFAULT 'monthly',
+  `next_due_date` date NOT NULL,
+  `status` enum('active','paused','cancelled') DEFAULT 'active',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `deleted_at` timestamp NULL DEFAULT NULL,
+  INDEX `idx_user_bills` (`user_id`),
+  INDEX `idx_due_date` (`next_due_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `savings_goals`
+--
+
+CREATE TABLE `savings_goals` (
+  `id` int(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `user_id` int(11) NOT NULL,
+  `title` varchar(100) NOT NULL,
+  `target_amount` decimal(10,2) NOT NULL,
+  `current_amount` decimal(10,2) DEFAULT 0.00,
+  `target_date` date DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `deleted_at` timestamp NULL DEFAULT NULL,
+  INDEX `idx_user_goals` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --

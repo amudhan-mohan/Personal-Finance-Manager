@@ -1,3 +1,28 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@source "../../pages/**/*.php";
+@source "../../includes/**/*.php";
+@source "../../ajax/**/*.php";
+@source "../../index.php";
+@source "../../logout.php";
+
+/* Custom Corporate Inner Scrollbar for Data Tables */
+.inscrolling-table-container {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+.inscrolling-table-container::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+.inscrolling-table-container::-webkit-scrollbar-track {
+    background: #f8fafc;
+    border-radius: 6px;
+}
+.inscrolling-table-container::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 6px;
+}
+.inscrolling-table-container::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}

@@ -1,6 +1,6 @@
 <?php
-require_once '../includes/auth.php';
-require_once '../includes/functions.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/functions.php';
 
 $auth = new Auth();
 if (!$auth->isLoggedIn()) {
@@ -39,11 +39,10 @@ switch ($period) {
         $end_date = date('Y-12-31', strtotime('-1 year'));
         break;
     case 'overall':
-        $start_date = '1970-01-01'; // Very early date
+        $start_date = '1970-01-01';
         $end_date = date('Y-m-d');
         break;
     case 'custom':
-        // Use custom dates from form
         if (empty($start_date)) $start_date = date('Y-m-01');
         if (empty($end_date)) $end_date = date('Y-m-t');
         break;
@@ -64,521 +63,629 @@ $transactions = $finance->getTransactions($user_id, $filters);
 $income_total = 0;
 $expense_total = 0;
 $category_totals = [];
-
-// Store transactions for CSV
 $transactions_data = [];
+
 while ($transaction = $transactions->fetch_assoc()) {
     $transactions_data[] = $transaction;
 
     if ($transaction['type'] === 'income') {
-        $income_total += $transaction['amount'];
+        $income_total += (float)$transaction['amount'];
     } else {
-        $expense_total += $transaction['amount'];
+        $expense_total += (float)$transaction['amount'];
 
         $category = $transaction['category'] ?: 'Uncategorized';
         if (!isset($category_totals[$category])) {
             $category_totals[$category] = 0;
         }
-        $category_totals[$category] += $transaction['amount'];
+        $category_totals[$category] += (float)$transaction['amount'];
     }
 }
 
 $net_flow = $income_total - $expense_total;
 
-// Get data for trend charts
-$monthly_data = getMonthlyData($finance, $user_id);
-$yearly_data = getYearlyData($finance, $user_id);
-$weekly_data = getWeeklyData($finance, $user_id);
-
-// Helper functions for chart data
-function getMonthlyData($finance, $user_id)
-{
-    $data = [];
-    for ($i = 5; $i >= 0; $i--) {
-        $month_start = date('Y-m-01', strtotime("-$i months"));
-        $month_end = date('Y-m-t', strtotime("-$i months"));
-        $month_name = date('M Y', strtotime("-$i months"));
-
-        $filters = ['start_date' => $month_start, 'end_date' => $month_end];
-        $transactions = $finance->getTransactions($user_id, $filters);
-
-        $income = 0;
-        $expense = 0;
-        while ($transaction = $transactions->fetch_assoc()) {
-            if ($transaction['type'] === 'income') {
-                $income += $transaction['amount'];
-            } else {
-                $expense += $transaction['amount'];
-            }
-        }
-
-        $data[] = [
-            'month' => $month_name,
-            'income' => $income,
-            'expense' => $expense,
-            'net' => $income - $expense
-        ];
-    }
-    return $data;
+// Optimized aggregation for 6-month monthly trend (single query)
+$monthly_data = [];
+$month_keys = [];
+for ($i = 5; $i >= 0; $i--) {
+    $k = date('Y-m', strtotime("-$i months"));
+    $month_keys[$k] = [
+        'month' => date('M Y', strtotime("-$i months")),
+        'income' => 0.0,
+        'expense' => 0.0,
+        'net' => 0.0
+    ];
 }
 
-function getYearlyData($finance, $user_id)
-{
-    $data = [];
-    $current_year = date('Y');
-    for ($year = $current_year - 2; $year <= $current_year; $year++) {
-        $year_start = "$year-01-01";
-        $year_end = "$year-12-31";
-
-        $filters = ['start_date' => $year_start, 'end_date' => $year_end];
-        $transactions = $finance->getTransactions($user_id, $filters);
-
-        $income = 0;
-        $expense = 0;
-        while ($transaction = $transactions->fetch_assoc()) {
-            if ($transaction['type'] === 'income') {
-                $income += $transaction['amount'];
+$six_months_start = date('Y-m-01', strtotime("-5 months"));
+$stmt_monthly = $finance->getDb()->conn->prepare("
+    SELECT DATE_FORMAT(transaction_date, '%Y-%m') as month_key,
+           type,
+           SUM(amount) as total
+    FROM transactions
+    WHERE user_id = ? AND transaction_date >= ? AND deleted_at IS NULL
+    GROUP BY month_key, type
+");
+if ($stmt_monthly) {
+    $stmt_monthly->bind_param("is", $user_id, $six_months_start);
+    $stmt_monthly->execute();
+    $res_monthly = $stmt_monthly->get_result();
+    while ($row = $res_monthly->fetch_assoc()) {
+        $mk = $row['month_key'];
+        if (isset($month_keys[$mk])) {
+            if ($row['type'] === 'income') {
+                $month_keys[$mk]['income'] = (float)$row['total'];
             } else {
-                $expense += $transaction['amount'];
+                $month_keys[$mk]['expense'] = (float)$row['total'];
             }
+            $month_keys[$mk]['net'] = $month_keys[$mk]['income'] - $month_keys[$mk]['expense'];
         }
-
-        $data[] = [
-            'year' => $year,
-            'income' => $income,
-            'expense' => $expense,
-            'net' => $income - $expense
-        ];
     }
-    return $data;
+}
+$monthly_data = array_values($month_keys);
+
+// Optimized aggregation for 3-year historical comparison (single query)
+$yearly_data = [];
+$cur_year = (int)date('Y');
+$year_keys = [];
+for ($yr = $cur_year - 2; $yr <= $cur_year; $yr++) {
+    $year_keys[$yr] = [
+        'year' => (string)$yr,
+        'income' => 0.0,
+        'expense' => 0.0,
+        'net' => 0.0
+    ];
 }
 
-function getWeeklyData($finance, $user_id)
-{
-    $data = [];
-    for ($i = 3; $i >= 0; $i--) {
-        $week_start = date('Y-m-d', strtotime("-$i weeks"));
-        $week_end = date('Y-m-d', strtotime("-$i weeks +6 days"));
-        $week_label = date('M j', strtotime("-$i weeks")) . ' - ' . date('M j', strtotime("-$i weeks +6 days"));
-
-        $filters = ['start_date' => $week_start, 'end_date' => $week_end];
-        $transactions = $finance->getTransactions($user_id, $filters);
-
-        $income = 0;
-        $expense = 0;
-        while ($transaction = $transactions->fetch_assoc()) {
-            if ($transaction['type'] === 'income') {
-                $income += $transaction['amount'];
+$three_year_start = ($cur_year - 2) . '-01-01';
+$stmt_yearly = $finance->getDb()->conn->prepare("
+    SELECT YEAR(transaction_date) as yr,
+           type,
+           SUM(amount) as total
+    FROM transactions
+    WHERE user_id = ? AND transaction_date >= ? AND deleted_at IS NULL
+    GROUP BY yr, type
+");
+if ($stmt_yearly) {
+    $stmt_yearly->bind_param("is", $user_id, $three_year_start);
+    $stmt_yearly->execute();
+    $res_yearly = $stmt_yearly->get_result();
+    while ($row = $res_yearly->fetch_assoc()) {
+        $y = (int)$row['yr'];
+        if (isset($year_keys[$y])) {
+            if ($row['type'] === 'income') {
+                $year_keys[$y]['income'] = (float)$row['total'];
             } else {
-                $expense += $transaction['amount'];
+                $year_keys[$y]['expense'] = (float)$row['total'];
             }
+            $year_keys[$y]['net'] = $year_keys[$y]['income'] - $year_keys[$y]['expense'];
         }
-
-        $data[] = [
-            'week' => $week_label,
-            'income' => $income,
-            'expense' => $expense,
-            'net' => $income - $expense
-        ];
     }
-    return $data;
 }
+$yearly_data = array_values($year_keys);
 
-// Handle CSV download
+// Handle CSV download with Formula Injection Sanitization
 if (isset($_GET['download_csv'])) {
-    header('Content-Type: text/csv');
+    header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="financial_report_' . date('Y-m-d') . '.csv"');
 
     $output = fopen('php://output', 'w');
 
-    // CSV headers
+    $sanitizeCsv = function ($val) {
+        $val = (string)$val;
+        if (strlen($val) > 0 && in_array($val[0], ['=', '+', '-', '@', "\t", "\r"], true)) {
+            return "'" . $val;
+        }
+        return $val;
+    };
+
     fputcsv($output, ['Date', 'Type', 'Description', 'Category', 'Account', 'Amount', 'Transaction Date']);
 
-    // CSV data
     foreach ($transactions_data as $transaction) {
         fputcsv($output, [
-            $transaction['transaction_date'],
-            ucfirst($transaction['type']),
-            $transaction['description'],
-            $transaction['category'] ?: 'Uncategorized',
-            $transaction['account_name'],
-            $transaction['amount'],
-            $transaction['created_at']
+            $sanitizeCsv($transaction['transaction_date']),
+            $sanitizeCsv(ucfirst($transaction['type'])),
+            $sanitizeCsv($transaction['description']),
+            $sanitizeCsv($transaction['category'] ?: 'Uncategorized'),
+            $sanitizeCsv($transaction['account_name']),
+            $sanitizeCsv($transaction['amount']),
+            $sanitizeCsv($transaction['created_at'])
         ]);
     }
 
     fclose($output);
     exit;
 }
+
+$quick_periods = [
+    'last_7_days' => 'Last 7 Days',
+    'this_month' => 'This Month',
+    'last_month' => 'Last Month',
+    'this_year' => 'This Year',
+    'last_year' => 'Last Year',
+    'overall' => 'Overall'
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reports - <?php echo SITE_NAME; ?></title>
-    <link rel="icon" href="/assets/img/logo.svg" data-next-head=""/>
-    <link rel="stylesheet" href="/assets/css/tailwind.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Financial Reports - <?php echo SITE_NAME; ?></title>
+    <link rel="icon" href="../assets/img/logo.svg" data-next-head=""/>
+    <link rel="stylesheet" href="../assets/css/tailwind.css?v=<?php echo asset_version(); ?>">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
-<body class="bg-gray-100">
-    <?php include '../includes/header.php'; ?>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen flex flex-col font-sans">
+    <?php include __DIR__ . '/../includes/header.php'; ?>
 
-    <div class="container mx-auto px-4 py-8">
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
-            <h1 class="text-3xl font-bold text-gray-800">Financial Reports</h1>
-
-            <!-- Export Button -->
-            <div class="flex gap-3">
-                <a href="?<?php echo http_build_query($_GET); ?>&download_csv=1"
-                    class="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition duration-200 shadow-sm">
-                    <svg class="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    Download CSV
-                </a>
-
-                <!-- Print Button -->
-                <button onclick="window.print()"
-                    class="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition duration-200 shadow-sm">
-                    <svg class="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-                    </svg>
-                    Print Report
-                </button>
-            </div>
-        </div>
-
-        <!-- Quick Period Filters -->
-        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
-            <h3 class="text-xl font-semibold mb-4">Quick Period Filters</h3>
-            <div class="flex flex-wrap gap-2 mb-4">
-                <a href="?period=last_7_days" class="px-4 py-2 rounded-lg <?php echo $period === 'last_7_days' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'; ?> transition duration-200">
-                    Last 7 Days
-                </a>
-                <a href="?period=this_month" class="px-4 py-2 rounded-lg <?php echo $period === 'this_month' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'; ?> transition duration-200">
-                    This Month
-                </a>
-                <a href="?period=last_month" class="px-4 py-2 rounded-lg <?php echo $period === 'last_month' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'; ?> transition duration-200">
-                    Last Month
-                </a>
-                <a href="?period=this_year" class="px-4 py-2 rounded-lg <?php echo $period === 'this_year' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'; ?> transition duration-200">
-                    This Year
-                </a>
-                <a href="?period=last_year" class="px-4 py-2 rounded-lg <?php echo $period === 'last_year' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'; ?> transition duration-200">
-                    Last Year
-                </a>
-                <a href="?period=overall" class="px-4 py-2 rounded-lg <?php echo $period === 'overall' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'; ?> transition duration-200">
-                    Overall
-                </a>
-            </div>
-
-            <!-- Custom Date Range -->
-            <form method="GET" class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <input type="hidden" name="period" value="custom">
+    <main class="flex-1">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <!-- Header Section -->
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between pb-6 mb-6 border-b border-slate-200 gap-4">
                 <div>
-                    <label for="start_date" class="block text-sm font-medium text-gray-700">Start Date</label>
-                    <input type="date" id="start_date" name="start_date"
-                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                        value="<?php echo $start_date; ?>">
+                    <h1 class="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Financial Reports</h1>
+                    <p class="text-xs sm:text-sm text-slate-500 mt-1">Audit income streams, expense distributions, and cash flow trends.</p>
                 </div>
 
-                <div>
-                    <label for="end_date" class="block text-sm font-medium text-gray-700">End Date</label>
-                    <input type="date" id="end_date" name="end_date"
-                        class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                        value="<?php echo $end_date; ?>">
-                </div>
-
-                <div class="flex items-end gap-2">
-                    <button type="submit"
-                        class="flex-1 bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-200">
-                        Apply Dates
-                    </button>
-                    <a href="reports.php"
-                        class="flex-1 bg-gray-600 text-white py-2 px-4 rounded-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-200 text-center">
-                        Reset
+                <div class="flex items-center gap-2.5">
+                    <!-- Export CSV Button -->
+                    <a href="?<?php echo htmlspecialchars(http_build_query($_GET)); ?>&download_csv=1"
+                        class="inline-flex items-center px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition duration-150 text-xs sm:text-sm font-semibold shadow-xs gap-2">
+                        <svg class="h-4 w-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        <span>Export CSV</span>
                     </a>
-                </div>
-            </form>
 
-            <!-- Period Info -->
-            <div class="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                <div class="flex items-center text-sm text-blue-700">
-                    <svg class="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
-                    Showing data from <strong class="mx-1"><?php echo date('M j, Y', strtotime($start_date)); ?></strong> to <strong class="mx-1"><?php echo date('M j, Y', strtotime($end_date)); ?></strong>
-                </div>
-            </div>
-        </div>
-
-        <!-- Summary Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div class="bg-white rounded-lg shadow-md p-6 border-l-4 border-green-500">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h3 class="text-lg font-semibold text-gray-600 mb-2">Total Income</h3>
-                        <p class="text-2xl font-bold text-green-600">₹<?php echo number_format($income_total, 2); ?></p>
-                    </div>
-                    <div class="p-3 bg-green-100 rounded-lg">
-                        <svg class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    <!-- Print Button -->
+                    <button onclick="window.print()"
+                        class="inline-flex items-center px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 hover:text-slate-900 transition duration-150 text-xs sm:text-sm font-semibold shadow-xs gap-2">
+                        <svg class="h-4 w-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="6 9 6 2 18 2 18 9"/>
+                            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                            <rect x="6" y="14" width="12" height="8"/>
                         </svg>
-                    </div>
+                        <span>Print</span>
+                    </button>
                 </div>
             </div>
 
-            <div class="bg-white rounded-lg shadow-md p-6 border-l-4 border-red-500">
-                <div class="flex items-center justify-between">
+            <!-- Filters Section -->
+            <div class="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 shadow-xs mb-8">
+                <div class="flex items-center justify-between mb-4">
+                    <span class="text-xs font-bold uppercase tracking-wider text-slate-500">Period Filter</span>
+                    <span class="text-xs text-slate-500 font-medium">Selected: <strong class="text-slate-800"><?php echo htmlspecialchars($start_date); ?></strong> to <strong class="text-slate-800"><?php echo htmlspecialchars($end_date); ?></strong></span>
+                </div>
+
+                <!-- Quick Period Pills -->
+                <div class="flex flex-wrap gap-2 mb-6">
+                    <?php foreach ($quick_periods as $key => $label): ?>
+                        <a href="?period=<?php echo urlencode($key); ?>"
+                            class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition <?php echo $period === $key ? 'bg-slate-900 text-white shadow-xs' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900'; ?>">
+                            <?php echo htmlspecialchars($label); ?>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
+
+                <!-- Custom Date Range Form -->
+                <form method="GET" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-4 border-t border-slate-100 items-end">
+                    <input type="hidden" name="period" value="custom">
                     <div>
-                        <h3 class="text-lg font-semibold text-gray-600 mb-2">Total Expenses</h3>
-                        <p class="text-2xl font-bold text-red-600">₹<?php echo number_format($expense_total, 2); ?></p>
+                        <label for="start_date" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">Start Date</label>
+                        <input type="date" id="start_date" name="start_date"
+                            class="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 shadow-2xs"
+                            value="<?php echo htmlspecialchars($start_date); ?>">
                     </div>
-                    <div class="p-3 bg-red-100 rounded-lg">
-                        <svg class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m0 0l-4-4m4 4l4-4" />
-                        </svg>
-                    </div>
-                </div>
-            </div>
 
-            <div class="bg-white rounded-lg shadow-md p-6 border-l-4 border-blue-500">
-                <div class="flex items-center justify-between">
                     <div>
-                        <h3 class="text-lg font-semibold text-gray-600 mb-2">Net Flow</h3>
-                        <p class="text-2xl font-bold <?php echo $net_flow >= 0 ? 'text-green-600' : 'text-red-600'; ?>">
-                            ₹<?php echo number_format($net_flow, 2); ?>
-                        </p>
+                        <label for="end_date" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">End Date</label>
+                        <input type="date" id="end_date" name="end_date"
+                            class="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900 shadow-2xs"
+                            value="<?php echo htmlspecialchars($end_date); ?>">
                     </div>
-                    <div class="p-3 bg-blue-100 rounded-lg">
-                        <svg class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                        </svg>
+
+                    <div class="flex items-center gap-2 sm:col-span-2">
+                        <button type="submit"
+                            class="flex-1 bg-slate-900 text-white py-2 px-4 rounded-lg hover:bg-slate-800 transition duration-150 text-xs sm:text-sm font-semibold shadow-xs">
+                            Apply Range
+                        </button>
+                        <a href="reports.php"
+                            class="py-2 px-4 bg-slate-100 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-200 transition duration-150 text-xs sm:text-sm font-semibold text-center">
+                            Reset
+                        </a>
+                    </div>
+                </form>
+            </div>
+
+            <!-- KPI Summary Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-5 mb-8">
+                <!-- Total Income -->
+                <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">Total Income</span>
+                            <div class="text-2xl font-bold text-slate-900 tracking-tight mt-1">₹<?php echo number_format($income_total, 2); ?></div>
+                            <span class="text-xs font-medium text-emerald-700 mt-1 inline-flex items-center gap-1">
+                                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="18 15 12 9 6 15"/>
+                                </svg>
+                                Inflow for period
+                            </span>
+                        </div>
+                        <div class="w-11 h-11 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center">
+                            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="19" x2="12" y2="5"/>
+                                <polyline points="5 12 12 5 19 12"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Total Expenses -->
+                <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">Total Expenses</span>
+                            <div class="text-2xl font-bold text-slate-900 tracking-tight mt-1">₹<?php echo number_format($expense_total, 2); ?></div>
+                            <span class="text-xs font-medium text-rose-700 mt-1 inline-flex items-center gap-1">
+                                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                                Outflow for period
+                            </span>
+                        </div>
+                        <div class="w-11 h-11 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 flex items-center justify-center">
+                            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <polyline points="19 12 12 19 5 12"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Net Cash Flow -->
+                <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">Net Cash Flow</span>
+                            <div class="text-2xl font-bold tracking-tight mt-1 <?php echo $net_flow >= 0 ? 'text-emerald-700' : 'text-rose-700'; ?>">
+                                ₹<?php echo number_format($net_flow, 2); ?>
+                            </div>
+                            <span class="text-xs font-medium text-slate-500 mt-1 block">
+                                <?php echo $net_flow >= 0 ? 'Surplus balance' : 'Deficit balance'; ?>
+                            </span>
+                        </div>
+                        <div class="w-11 h-11 rounded-lg bg-slate-100 text-slate-800 border border-slate-200 flex items-center justify-center">
+                            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 3v18"/>
+                                <path d="M3 7l9-4 9 4"/>
+                                <path d="M5 10l-2 5h4l-2-5"/>
+                                <path d="M19 10l-2 5h4l-2-5"/>
+                            </svg>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Comprehensive Charts -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-            <!-- Monthly Trend Chart -->
-            <div class="bg-white rounded-lg shadow-md p-6">
-                <h3 class="text-xl font-semibold mb-4">6-Month Trend</h3>
-                <div class="h-64">
-                    <canvas id="monthlyTrendChart"></canvas>
+            <!-- Charts Section -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                <!-- 6-Month Trend -->
+                <div class="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 shadow-xs">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-bold text-slate-900 uppercase tracking-wider">6-Month Trend</h3>
+                        <span class="text-xs font-medium text-slate-400">Monthly</span>
+                    </div>
+                    <div class="h-64 sm:h-72">
+                        <canvas id="monthlyTrendChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Expense Distribution by Category -->
+                <div class="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 shadow-xs">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-bold text-slate-900 uppercase tracking-wider">Expense by Category</h3>
+                        <span class="text-xs font-medium text-slate-400">Selected Window</span>
+                    </div>
+                    <div class="h-64 sm:h-72">
+                        <canvas id="categoryChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Income vs Expense Bar Ratio -->
+                <div class="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 shadow-xs">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-bold text-slate-900 uppercase tracking-wider">Income vs Expenses</h3>
+                        <span class="text-xs font-medium text-slate-400">Period Ratio</span>
+                    </div>
+                    <div class="h-64 sm:h-72">
+                        <canvas id="incomeExpenseChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- 3-Year Historical Comparison -->
+                <div class="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 shadow-xs">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-sm font-bold text-slate-900 uppercase tracking-wider">Yearly Comparison</h3>
+                        <span class="text-xs font-medium text-slate-400">3-Year View</span>
+                    </div>
+                    <div class="h-64 sm:h-72">
+                        <canvas id="yearlyChart"></canvas>
+                    </div>
                 </div>
             </div>
 
-            <!-- Expense by Category Chart -->
-            <div class="bg-white rounded-lg shadow-md p-6">
-                <h3 class="text-xl font-semibold mb-4">Expenses by Category</h3>
-                <div class="h-64">
-                    <canvas id="categoryChart"></canvas>
+            <!-- Transaction Audit Ledger -->
+            <div class="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden mb-8">
+                <div class="p-5 sm:p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div>
+                        <h3 class="text-base font-bold text-slate-900 tracking-tight">Ledger Records</h3>
+                        <p class="text-xs text-slate-500 mt-0.5"><?php echo count($transactions_data); ?> transaction entries matching active filter</p>
+                    </div>
                 </div>
-            </div>
 
-            <!-- Income vs Expense Chart -->
-            <div class="bg-white rounded-lg shadow-md p-6">
-                <h3 class="text-xl font-semibold mb-4">Income vs Expenses</h3>
-                <div class="h-64">
-                    <canvas id="incomeExpenseChart"></canvas>
+                <!-- Mobile Card List (< md) -->
+                <div class="block md:hidden divide-y divide-slate-100 max-h-[520px] overflow-y-auto inscrolling-table-container">
+                    <?php if (!empty($transactions_data)): ?>
+                        <?php foreach ($transactions_data as $tx): ?>
+                            <div class="p-4 space-y-2">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-xs text-slate-400 font-mono"><?php echo date('d M Y', strtotime($tx['transaction_date'])); ?></span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold uppercase tracking-wider <?php echo $tx['type'] === 'income' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'; ?>">
+                                        <?php echo htmlspecialchars($tx['type']); ?>
+                                    </span>
+                                </div>
+                                <div class="flex items-baseline justify-between">
+                                    <span class="text-sm font-semibold text-slate-900"><?php echo htmlspecialchars($tx['description']); ?></span>
+                                    <span class="text-sm font-bold <?php echo $tx['type'] === 'income' ? 'text-emerald-700' : 'text-slate-900'; ?>">
+                                        <?php echo $tx['type'] === 'income' ? '+' : '-'; ?>₹<?php echo number_format($tx['amount'], 2); ?>
+                                    </span>
+                                </div>
+                                <div class="flex items-center justify-between text-xs text-slate-500 pt-1">
+                                    <span class="inline-flex items-center gap-1">
+                                        <?php echo account_icon('h-3 w-3 text-slate-400'); ?>
+                                        <?php echo htmlspecialchars($tx['account_name']); ?>
+                                    </span>
+                                    <span class="px-2 py-0.5 bg-slate-100 rounded text-[11px] text-slate-600 font-medium">
+                                        <?php echo htmlspecialchars($tx['category'] ?: 'General'); ?>
+                                    </span>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="p-8 text-center text-slate-500 text-xs">
+                            No ledger records for the selected period.
+                        </div>
+                    <?php endif; ?>
                 </div>
-            </div>
 
-            <!-- Yearly Comparison Chart -->
-            <div class="bg-white rounded-lg shadow-md p-6">
-                <h3 class="text-xl font-semibold mb-4">Yearly Comparison</h3>
-                <div class="h-64">
-                    <canvas id="yearlyChart"></canvas>
-                </div>
-            </div>
-        </div>
-
-        <!-- Transaction Data Table -->
-        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
-                <h3 class="text-xl font-semibold">Transaction Details</h3>
-                <div class="text-sm text-gray-600">
-                    <?php echo count($transactions_data); ?> transactions found
-                </div>
-            </div>
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">S.No</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Account</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        <?php $s = 1;
-                        if (!empty($transactions_data)): ?>
-                            <?php foreach ($transactions_data as $transaction): ?>
-                                <tr class="hover:bg-gray-50">
-                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500"><?php echo $s++; ?></td>
-                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                                        <?php echo date('M j, Y', strtotime($transaction['transaction_date'])); ?>
-                                    </td>
-                                    <td class="px-4 py-3 text-sm text-gray-500">
-                                        <?php echo htmlspecialchars($transaction['account_name']); ?>
-                                    </td>
-                                    <td class="px-4 py-3 whitespace-nowrap text-sm font-semibold <?php echo $transaction['type'] === 'income' ? 'text-green-600' : 'text-red-600'; ?>">
-                                        <?php echo $transaction['type'] === 'income' ? '+' : '-'; ?>₹<?php echo number_format($transaction['amount'], 2); ?>
-                                    </td>
-                                    <td class="px-4 py-3 whitespace-nowrap">
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <?php echo $transaction['type'] === 'income' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'; ?>">
-                                            <?php echo ucfirst($transaction['type']); ?>
-                                        </span>
-                                    </td>
-                                    <td class="px-4 py-3 text-sm text-gray-900">
-                                        <?php echo htmlspecialchars($transaction['description']); ?>
-                                    </td>
-                                    <td class="px-4 py-3 text-sm text-gray-500">
-                                        <?php echo htmlspecialchars($transaction['category'] ?: 'Uncategorized'); ?>
+                <!-- Desktop Table View (>= md) with Fixed Height & Inner Scrolling -->
+                <div class="hidden md:block overflow-x-auto max-h-[520px] overflow-y-auto border border-slate-200 rounded-xl inscrolling-table-container">
+                    <table class="min-w-full divide-y divide-slate-200">
+                        <thead class="sticky top-0 z-10 bg-slate-50 border-b border-slate-200">
+                            <tr>
+                                <th scope="col" class="px-4 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wider bg-slate-50">#</th>
+                                <th scope="col" class="px-4 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wider bg-slate-50">Date</th>
+                                <th scope="col" class="px-4 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wider bg-slate-50">Account</th>
+                                <th scope="col" class="px-4 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wider bg-slate-50">Description</th>
+                                <th scope="col" class="px-4 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wider bg-slate-50">Category</th>
+                                <th scope="col" class="px-4 py-3 text-left text-[11px] font-semibold text-slate-500 uppercase tracking-wider bg-slate-50">Type</th>
+                                <th scope="col" class="px-4 py-3 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wider bg-slate-50">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-slate-100">
+                            <?php $s = 1;
+                            if (!empty($transactions_data)): ?>
+                                <?php foreach ($transactions_data as $tx): ?>
+                                    <tr class="hover:bg-slate-50/80 transition-colors">
+                                        <td class="px-4 py-3 whitespace-nowrap text-xs text-slate-400 font-mono"><?php echo $s++; ?></td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-xs text-slate-600 font-medium">
+                                            <?php echo date('d M Y', strtotime($tx['transaction_date'])); ?>
+                                        </td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-xs text-slate-700 font-semibold">
+                                            <?php echo htmlspecialchars($tx['account_name']); ?>
+                                        </td>
+                                        <td class="px-4 py-3 text-xs text-slate-900 font-medium max-w-xs truncate">
+                                            <?php echo htmlspecialchars($tx['description']); ?>
+                                        </td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-xs text-slate-600">
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700">
+                                                <?php echo htmlspecialchars($tx['category'] ?: 'Uncategorized'); ?>
+                                            </span>
+                                        </td>
+                                        <td class="px-4 py-3 whitespace-nowrap">
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold uppercase tracking-wider <?php echo $tx['type'] === 'income' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'; ?>">
+                                                <?php echo htmlspecialchars($tx['type']); ?>
+                                            </span>
+                                        </td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-xs font-bold text-right <?php echo $tx['type'] === 'income' ? 'text-emerald-700' : 'text-slate-900'; ?>">
+                                            <?php echo $tx['type'] === 'income' ? '+' : '-'; ?>₹<?php echo number_format($tx['amount'], 2); ?>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <tr>
+                                    <td colspan="7" class="px-6 py-12 text-center text-slate-400 text-xs">
+                                        No ledger records match the current filter criteria.
                                     </td>
                                 </tr>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <tr>
-                                <td colspan="7" class="px-4 py-12">
-                                    <div class="flex flex-col items-center justify-center text-center text-gray-500 space-y-3">
-                                        <svg class="h-16 w-16 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                        </svg>
-                                        <div>
-                                            <p class="text-base font-medium text-gray-600">No transactions found</p>
-                                            <p class="text-sm text-gray-500 mt-1">Try selecting a different time period or add some transactions.</p>
-                                        </div>
-                                        <a href="transactions.php" class="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition duration-200 text-sm">
-                                            <svg class="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                                            </svg>
-                                            Add Transaction
-                                        </a>
-                                    </div>
-                                </td>
-                            </tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
-    </div>
+    </main>
 
-    <?php include '../includes/footer.php'; ?>
+    <?php include __DIR__ . '/../includes/footer.php'; ?>
 
     <script>
-        // Monthly Trend Chart
+        const chartFont = { family: 'Inter, system-ui, -apple-system, sans-serif', size: 11 };
+
+        // 1. Monthly Trend Chart
         const monthlyTrendCtx = document.getElementById('monthlyTrendChart').getContext('2d');
-        const monthlyTrendChart = new Chart(monthlyTrendCtx, {
+        new Chart(monthlyTrendCtx, {
             type: 'line',
             data: {
                 labels: <?php echo json_encode(array_column($monthly_data, 'month')); ?>,
-                datasets: [{
+                datasets: [
+                    {
                         label: 'Income',
                         data: <?php echo json_encode(array_column($monthly_data, 'income')); ?>,
-                        borderColor: '#10B981',
-                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                        tension: 0.4,
-                        fill: true
+                        borderColor: '#059669',
+                        backgroundColor: 'rgba(5, 150, 105, 0.08)',
+                        borderWidth: 2,
+                        tension: 0.35,
+                        fill: true,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
                     },
                     {
-                        label: 'Expenses',
+                        label: 'Expense',
                         data: <?php echo json_encode(array_column($monthly_data, 'expense')); ?>,
-                        borderColor: '#EF4444',
-                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                        tension: 0.4,
-                        fill: true
+                        borderColor: '#e11d48',
+                        backgroundColor: 'rgba(225, 29, 72, 0.08)',
+                        borderWidth: 2,
+                        tension: 0.35,
+                        fill: true,
+                        pointRadius: 3,
+                        pointHoverRadius: 5
                     }
                 ]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: { font: chartFont, boxWidth: 12, usePointStyle: true }
+                    }
+                },
                 scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { font: chartFont }
+                    },
                     y: {
-                        beginAtZero: true
+                        beginAtZero: true,
+                        grid: { color: 'rgba(226, 232, 240, 0.7)' },
+                        ticks: { font: chartFont }
                     }
                 }
             }
         });
 
-        // Expense by Category Chart
+        // 2. Category Doughnut Chart
         const categoryCtx = document.getElementById('categoryChart').getContext('2d');
-        const categoryChart = new Chart(categoryCtx, {
+        const categoryKeys = <?php echo json_encode(array_keys($category_totals)); ?>;
+        const categoryValues = <?php echo json_encode(array_values($category_totals)); ?>;
+
+        new Chart(categoryCtx, {
             type: 'doughnut',
             data: {
-                labels: <?php echo json_encode(array_keys($category_totals)); ?>,
+                labels: categoryKeys.length > 0 ? categoryKeys : ['No Expenses'],
                 datasets: [{
-                    data: <?php echo json_encode(array_values($category_totals)); ?>,
+                    data: categoryValues.length > 0 ? categoryValues : [1],
                     backgroundColor: [
-                        '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0',
-                        '#9966FF', '#FF9F40', '#FF6384', '#C9CBCF',
-                        '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0'
-                    ]
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false
-            }
-        });
-
-        // Income vs Expense Chart
-        const incomeExpenseCtx = document.getElementById('incomeExpenseChart').getContext('2d');
-        const incomeExpenseChart = new Chart(incomeExpenseCtx, {
-            type: 'bar',
-            data: {
-                labels: ['Income', 'Expenses'],
-                datasets: [{
-                    label: 'Amount',
-                    data: [<?php echo $income_total; ?>, <?php echo $expense_total; ?>],
-                    backgroundColor: ['#10B981', '#EF4444']
+                        '#0f172a', '#2563eb', '#059669', '#d97706',
+                        '#7c3aed', '#0891b2', '#e11d48', '#475569',
+                        '#ca8a04', '#4f46e5'
+                    ],
+                    borderWidth: 1,
+                    borderColor: '#ffffff'
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        labels: { font: chartFont, boxWidth: 10, usePointStyle: true }
+                    }
+                },
+                cutout: '68%'
+            }
+        });
+
+        // 3. Income vs Expense Ratio Bar Chart
+        const incomeExpenseCtx = document.getElementById('incomeExpenseChart').getContext('2d');
+        new Chart(incomeExpenseCtx, {
+            type: 'bar',
+            data: {
+                labels: ['Total Inflow', 'Total Outflow'],
+                datasets: [{
+                    data: [<?php echo $income_total; ?>, <?php echo $expense_total; ?>],
+                    backgroundColor: ['#059669', '#e11d48'],
+                    borderRadius: 6,
+                    maxBarThickness: 56
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
                 scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { font: chartFont }
+                    },
                     y: {
-                        beginAtZero: true
+                        beginAtZero: true,
+                        grid: { color: 'rgba(226, 232, 240, 0.7)' },
+                        ticks: { font: chartFont }
                     }
                 }
             }
         });
 
-        // Yearly Comparison Chart
+        // 4. Yearly Historical Comparison Bar Chart
         const yearlyCtx = document.getElementById('yearlyChart').getContext('2d');
-        const yearlyChart = new Chart(yearlyCtx, {
+        new Chart(yearlyCtx, {
             type: 'bar',
             data: {
                 labels: <?php echo json_encode(array_column($yearly_data, 'year')); ?>,
-                datasets: [{
+                datasets: [
+                    {
                         label: 'Income',
                         data: <?php echo json_encode(array_column($yearly_data, 'income')); ?>,
-                        backgroundColor: '#10B981'
+                        backgroundColor: '#059669',
+                        borderRadius: 4,
+                        maxBarThickness: 36
                     },
                     {
-                        label: 'Expenses',
+                        label: 'Expense',
                         data: <?php echo json_encode(array_column($yearly_data, 'expense')); ?>,
-                        backgroundColor: '#EF4444'
+                        backgroundColor: '#e11d48',
+                        borderRadius: 4,
+                        maxBarThickness: 36
                     }
                 ]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: { font: chartFont, boxWidth: 12, usePointStyle: true }
+                    }
+                },
                 scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { font: chartFont }
+                    },
                     y: {
-                        beginAtZero: true
+                        beginAtZero: true,
+                        grid: { color: 'rgba(226, 232, 240, 0.7)' },
+                        ticks: { font: chartFont }
                     }
                 }
             }

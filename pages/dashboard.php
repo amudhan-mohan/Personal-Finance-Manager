@@ -10,371 +10,397 @@ if (!$auth->isLoggedIn()) {
 
 $finance = new FinanceManager();
 $user_id = $auth->getUserId();
+
+// Balances and KPIs
 $balance_summary = $finance->getTotalBalance($user_id);
-$recent_transactions = $finance->getRecentTransactions($user_id, 5);
+$net_worth = (float)($balance_summary['net_worth'] ?? 0);
+$liquid_balance = (float)($balance_summary['liquid_balance'] ?? 0);
+
+// Recent activity
+$recent_transactions = $finance->getTransactions($user_id, ['limit' => 5]);
 $recent_transfers = $finance->getTransferHistory($user_id, 3);
 
-// Calculate some stats for the cards
+// Budgets snapshot for current month
+$budget_perf = $finance->getBudgetPerformance($user_id);
+
+// Upcoming bills due in next 7 days
+$bills_res = $finance->getRecurringBills($user_id, 'active');
+$upcoming_bills = [];
+$bills_due_soon_count = 0;
+$today_ts = strtotime(date('Y-m-d'));
+
+while ($bill = $bills_res->fetch_assoc()) {
+    $due_ts = strtotime($bill['next_due_date']);
+    $diff_days = floor(($due_ts - $today_ts) / 86400);
+    if ($diff_days <= 14) {
+        $bill['days_left'] = $diff_days;
+        $upcoming_bills[] = $bill;
+        if ($diff_days <= 7) {
+            $bills_due_soon_count++;
+        }
+    }
+}
+
+// Cash Flow Forecast snapshot (30 days)
+$forecast_30 = $finance->generateCashFlowForecast($user_id, 30);
+
+// Savings goals snapshot
+$goals_res = $finance->getSavingsGoals($user_id);
+$featured_goals = [];
+while ($g = $goals_res->fetch_assoc()) {
+    if (count($featured_goals) < 3) {
+        $featured_goals[] = $g;
+    }
+}
+
+// Counts
 $accounts_count = $finance->getAccounts($user_id)->num_rows;
 $transactions_count = $finance->getTransactions($user_id)->num_rows;
-$transfers_count = $finance->getTransfers($user_id)->num_rows;
 ?>
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - <?php echo SITE_NAME; ?></title>
-    <link rel="icon" href="/assets/img/logo.svg" data-next-head=""/>
-    <link rel="stylesheet" href="/assets/css/tailwind.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Executive Dashboard - <?php echo SITE_NAME; ?></title>
+    <link rel="icon" href="../assets/img/logo.svg" data-next-head=""/>
+    <link rel="stylesheet" href="../assets/css/tailwind.css?v=<?php echo asset_version(); ?>">
 </head>
 
-<body class="bg-gradient-to-br from-gray-50 to-blue-50 min-h-screen">
+<body class="bg-slate-50 min-h-screen text-slate-900 font-sans antialiased">
     <?php include __DIR__ . '/../includes/header.php'; ?>
 
-    <div class="container mx-auto px-4 py-8">
-        <!-- Header Section -->
-        <div class="mb-8">
-            <h1 class="text-4xl font-bold text-gray-800 mb-2">Dashboard</h1>
-            <p class="text-gray-600">Welcome back! Here's your financial overview.</p>
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Page Header -->
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8 gap-4 pb-6 border-b border-slate-200">
+            <div>
+                <div class="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                    <span>Portfolio Cockpit</span>
+                    <span>/</span>
+                    <span class="text-slate-800">Consolidated Intelligence</span>
+                </div>
+                <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">Executive Wealth & Cash Flow Overview</h1>
+                <p class="text-sm text-slate-600 mt-1">Real-time ledger audit, forward cash projection, and obligations management.</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <a href="import.php" class="inline-flex items-center px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-xs transition">
+                    <svg class="h-4 w-4 mr-1.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Import CSV
+                </a>
+                <a href="transactions.php" class="inline-flex items-center px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-xs transition">
+                    <svg class="h-4 w-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19"/>
+                        <line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    New Transaction
+                </a>
+            </div>
         </div>
 
-        <!-- Stats Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-            <!-- Accounts Card -->
-            <div class="bg-white rounded-2xl shadow-lg p-6 border-l-4 border-blue-500">
+        <!-- Metric KPI Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+            <!-- Consolidated Net Worth Card -->
+            <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
                 <div class="flex items-center justify-between">
                     <div>
-                        <p class="text-sm font-medium text-gray-600">Total Accounts</p>
-                        <p class="text-2xl font-bold text-gray-800"><?php echo $accounts_count; ?></p>
-                    </div>
-                    <div class="p-3 bg-blue-100 rounded-xl">
-                        <svg class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                        </svg>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Transactions Card -->
-            <div class="bg-white rounded-2xl shadow-lg p-6 border-l-4 border-green-500">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm font-medium text-gray-600">Total Transactions</p>
-                        <p class="text-2xl font-bold text-gray-800"><?php echo $transactions_count; ?></p>
-                    </div>
-                    <div class="p-3 bg-green-100 rounded-xl">
-                        <svg class="h-6 w-6 text-green-600" xmlns="http://www.w3.org/2000/svg" version="1.0" viewBox="40 -1 170 250">
-                            <path fill="#10B981" d="M153 23h41l15-23H55L40 23h26c27 0 52 2 62 25H55L40 71h91v1c0 17-14 43-60 43H48v22l90 113h41L85 133c39-2 75-24 80-62h29l15-23h-45c-1-9-5-18-11-25z" />
-                        </svg>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Transfers Card -->
-            <div class="bg-white rounded-2xl shadow-lg p-6 border-l-4 border-purple-500">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm font-medium text-gray-600">Total Transfers</p>
-                        <p class="text-2xl font-bold text-gray-800"><?php echo $transfers_count; ?></p>
-                    </div>
-                    <div class="p-3 bg-purple-100 rounded-xl">
-                        <svg class="h-6 w-6 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                        </svg>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Net Worth Card -->
-            <div class="bg-white rounded-2xl shadow-lg p-6 border-l-4 border-indigo-500">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm font-medium text-gray-600">Net Worth</p>
-                        <p class="text-2xl font-bold text-indigo-600 flex items-center">
-                            <svg class="h-6 w-6 mr-1" xmlns="http://www.w3.org/2000/svg" version="1.0" viewBox="40 -1 170 250">
-                                <path fill="#8B5CF6" d="M153 23h41l15-23H55L40 23h26c27 0 52 2 62 25H55L40 71h91v1c0 17-14 43-60 43H48v22l90 113h41L85 133c39-2 75-24 80-62h29l15-23h-45c-1-9-5-18-11-25z" />
-                            </svg>
-                            <?php echo number_format($balance_summary['total_balance'] ?? 0, 2); ?>
+                        <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Consolidated Net Worth</p>
+                        <p class="text-2xl font-bold <?php echo $net_worth >= 0 ? 'text-slate-900' : 'text-rose-700'; ?> mt-1">
+                            ₹<?php echo number_format($net_worth, 2); ?>
                         </p>
                     </div>
-                    <div class="p-3 bg-indigo-100 rounded-xl">
-                        <svg class="h-6 w-6 text-indigo-600" xmlns="http://www.w3.org/2000/svg" version="1.0" viewBox="40 -1 170 250">
-                            <path fill="#8B5CF6" d="M153 23h41l15-23H55L40 23h26c27 0 52 2 62 25H55L40 71h91v1c0 17-14 43-60 43H48v22l90 113h41L85 133c39-2 75-24 80-62h29l15-23h-45c-1-9-5-18-11-25z" />
+                    <div class="p-2.5 bg-slate-100 text-slate-800 rounded-lg">
+                        <?php echo rupee_icon('h-5 w-5 text-slate-800'); ?>
+                    </div>
+                </div>
+                <div class="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                    <span>Assets - Liabilities</span>
+                    <a href="accounts.php" class="font-semibold text-slate-800 hover:underline">Portfolios &rarr;</a>
+                </div>
+            </div>
+
+            <!-- Liquid Cash Reserves -->
+            <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Liquid Cash Reserves</p>
+                        <p class="text-2xl font-bold text-slate-900 mt-1">
+                            ₹<?php echo number_format($liquid_balance, 2); ?>
+                        </p>
+                    </div>
+                    <div class="p-2.5 bg-blue-50 text-blue-700 rounded-lg">
+                        <?php echo account_icon('h-5 w-5 text-blue-700'); ?>
+                    </div>
+                </div>
+                <div class="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                    <span>Bank & Cash Available</span>
+                    <span class="text-slate-700 font-semibold"><?php echo $accounts_count; ?> accounts</span>
+                </div>
+            </div>
+
+            <!-- Monthly Budget Guardrail -->
+            <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Monthly Budget Burn</p>
+                        <p class="text-2xl font-bold text-slate-900 mt-1">
+                            <?php echo $budget_perf['overall_pct']; ?>%
+                        </p>
+                    </div>
+                    <div class="p-2.5 bg-amber-50 text-amber-700 rounded-lg">
+                        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                            <path d="M21.21 15.89A10 10 0 1 1 8 2.83"/>
+                            <path d="M22 12A10 10 0 0 0 12 2v10z"/>
                         </svg>
                     </div>
+                </div>
+                <div class="mt-3 pt-3 border-t border-slate-100">
+                    <div class="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mb-1">
+                        <div class="h-full rounded-full <?php 
+                            if ($budget_perf['overall_pct'] >= 100) echo 'bg-rose-600';
+                            elseif ($budget_perf['overall_pct'] >= 80) echo 'bg-amber-500';
+                            else echo 'bg-emerald-600';
+                        ?>" style="width: <?php echo min(100, $budget_perf['overall_pct']); ?>%;"></div>
+                    </div>
+                    <div class="flex justify-between text-[11px] text-slate-500">
+                        <span>Spent: ₹<?php echo number_format($budget_perf['total_spent'], 0); ?></span>
+                        <a href="budgets.php" class="font-semibold text-slate-800 hover:underline">Limits &rarr;</a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 30-Day Forward Forecast -->
+            <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">30-Day Cash Forecast</p>
+                        <p class="text-2xl font-bold <?php echo $forecast_30['ending_balance'] >= 0 ? 'text-slate-900' : 'text-rose-700'; ?> mt-1">
+                            ₹<?php echo number_format($forecast_30['ending_balance'], 2); ?>
+                        </p>
+                    </div>
+                    <div class="p-2.5 bg-indigo-50 text-indigo-700 rounded-lg">
+                        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                            <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+                            <polyline points="16 7 22 7 22 13"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                    <span>Valley: ₹<?php echo number_format($forecast_30['min_balance'], 0); ?></span>
+                    <a href="forecast.php" class="font-semibold text-indigo-700 hover:underline">Simulation &rarr;</a>
                 </div>
             </div>
         </div>
 
         <!-- Main Content Grid -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <!-- Left Column -->
+            <!-- Left Column: Recent Ledger & Forward Cash Flow -->
             <div class="lg:col-span-2 space-y-8">
-                <!-- Balance Overview -->
-                <div class="bg-white rounded-2xl shadow-lg p-6">
-                    <div class="flex items-center justify-between mb-6">
-                        <h2 class="text-xl font-bold text-gray-800">Balance Overview</h2>
-                        <div class="p-2 bg-gray-100 rounded-lg">
-                            <svg class="h-5 w-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                            </svg>
+                <!-- Forward Liquidity Horizon Snapshot -->
+                <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <h2 class="text-base font-bold text-slate-900">Forward Liquidity Horizon</h2>
+                            <p class="text-xs text-slate-500">Run-rate simulation considering recurring bills over next 30 days</p>
                         </div>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <!-- Bank Balance -->
-                        <div class="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-4 border border-blue-200">
-                            <div class="flex items-center space-x-3">
-                                <div class="p-2 bg-blue-500 rounded-lg">
-                                    <svg class="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                                    </svg>
-                                </div>
-                                <div>
-                                    <p class="text-sm font-medium text-blue-600">Bank Balance</p>
-                                    <p class="text-lg font-bold text-blue-800">₹<?php echo number_format($balance_summary['bank_balance'] ?? 0, 2); ?></p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Cash Balance -->
-                        <div class="bg-gradient-to-br from-green-50 to-green-100 rounded-xl p-4 border border-green-200">
-                            <div class="flex items-center space-x-3">
-                                <div class="p-2 bg-green-500 rounded-lg">
-                                    <svg class="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
-                                    </svg>
-                                </div>
-                                <div>
-                                    <p class="text-sm font-medium text-green-600">Cash Balance</p>
-                                    <p class="text-lg font-bold text-green-800">₹<?php echo number_format($balance_summary['cash_balance'] ?? 0, 2); ?></p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Total Balance -->
-                        <div class="bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl p-4 border border-purple-200">
-                            <div class="flex items-center space-x-3">
-                                <div class="p-2 bg-purple-500 rounded-lg">
-                                    <svg class="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                                    </svg>
-                                </div>
-                                <div>
-                                    <p class="text-sm font-medium text-purple-600">Total Balance</p>
-                                    <p class="text-lg font-bold text-purple-800">₹<?php echo number_format($balance_summary['total_balance'] ?? 0, 2); ?></p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Recent Transactions -->
-                <div class="bg-white rounded-2xl shadow-lg p-6">
-                    <div class="flex items-center justify-between mb-6">
-                        <h2 class="text-xl font-bold text-gray-800">Recent Transactions</h2>
-                        <a href="transactions.php" class="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center space-x-1">
-                            <span>View All</span>
-                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                        <a href="forecast.php" class="text-xs font-semibold text-slate-700 hover:text-slate-900 flex items-center space-x-1">
+                            <span>Open 90-Day Engine</span>
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                <polyline points="9 18 15 12 9 6"/>
                             </svg>
                         </a>
                     </div>
 
-                    <div class="space-y-4">
+                    <div class="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <span class="text-[11px] font-semibold uppercase text-slate-500 block">Daily Discretionary Velocity</span>
+                            <span class="text-base font-bold <?php echo $forecast_30['daily_velocity'] >= 0 ? 'text-emerald-700' : 'text-rose-700'; ?>">
+                                <?php echo ($forecast_30['daily_velocity'] >= 0 ? '+₹' : '-₹') . number_format(abs($forecast_30['daily_velocity']), 2); ?>/day
+                            </span>
+                        </div>
+                        <div>
+                            <span class="text-[11px] font-semibold uppercase text-slate-500 block">Projected 30d Valley</span>
+                            <span class="text-base font-bold text-slate-900">
+                                ₹<?php echo number_format($forecast_30['min_balance'], 2); ?>
+                            </span>
+                            <span class="text-[10px] text-slate-400 block"><?php echo date('M j', strtotime($forecast_30['min_balance_date'])); ?></span>
+                        </div>
+                        <div>
+                            <span class="text-[11px] font-semibold uppercase text-slate-500 block">Scheduled Obligations</span>
+                            <span class="text-base font-bold text-slate-900">
+                                ₹<?php echo number_format($forecast_30['total_bills_projected'], 2); ?>
+                            </span>
+                        </div>
+                        <div>
+                            <a href="forecast.php" class="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold transition">
+                                View Trajectory
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Ledger Entries -->
+                <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                    <div class="flex items-center justify-between mb-5">
+                        <div>
+                            <h2 class="text-base font-bold text-slate-900">Recent Ledger Activity</h2>
+                            <p class="text-xs text-slate-500">Latest income and expense entries posted</p>
+                        </div>
+                        <a href="transactions.php" class="text-xs font-semibold text-slate-700 hover:text-slate-900 flex items-center space-x-1">
+                            <span>View All Entries (<?php echo $transactions_count; ?>)</span>
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                <polyline points="9 18 15 12 9 6"/>
+                            </svg>
+                        </a>
+                    </div>
+
+                    <div class="space-y-3 max-h-[460px] overflow-y-auto pr-1 inscrolling-table-container">
                         <?php if ($recent_transactions->num_rows > 0): ?>
                             <?php while ($transaction = $recent_transactions->fetch_assoc()): ?>
-                                <div class="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-gray-50 rounded-xl hover:bg-gray-100 transition duration-200 gap-3">
-                                    <!-- Left Section - Icon and Details -->
-                                    <div class="flex items-start sm:items-center space-x-4 flex-1 min-w-0">
-                                        <!-- Icon -->
-                                        <div class="<?php echo $transaction['type'] === 'income' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'; ?> p-3 rounded-lg flex-shrink-0">
+                                <div class="flex items-center justify-between p-3.5 bg-slate-50 hover:bg-slate-100/70 border border-slate-200 rounded-xl transition duration-150">
+                                    <div class="flex items-center space-x-3.5 min-w-0">
+                                        <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 <?php echo $transaction['type'] === 'income' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'; ?>">
                                             <?php if ($transaction['type'] === 'income'): ?>
-                                                <svg class="h-5 w-5 sm:h-6 sm:w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                                                    <line x1="12" y1="19" x2="12" y2="5"/>
+                                                    <polyline points="5 12 12 5 19 12"/>
                                                 </svg>
                                             <?php else: ?>
-                                                <svg class="h-5 w-5 sm:h-6 sm:w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m0 0l-4-4m4 4l4-4" />
+                                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                                                    <line x1="12" y1="5" x2="12" y2="19"/>
+                                                    <polyline points="19 12 12 19 5 12"/>
                                                 </svg>
                                             <?php endif; ?>
                                         </div>
-
-                                        <!-- Text Content -->
-                                        <div class="min-w-0 flex-1">
-                                            <p class="font-medium text-gray-800 text-sm sm:text-base truncate">
+                                        <div class="min-w-0">
+                                            <p class="text-sm font-semibold text-slate-900 truncate">
                                                 <?php echo htmlspecialchars($transaction['description']); ?>
                                             </p>
-                                            <div class="flex flex-col xs:flex-row xs:items-center text-xs sm:text-sm text-gray-500 gap-1 xs:gap-2 mt-1">
-                                                <span class="truncate"><?php echo $transaction['account_name']; ?></span>
-                                                <span class="hidden xs:inline">•</span>
+                                            <div class="flex items-center text-xs text-slate-500 space-x-2 mt-0.5">
+                                                <span><?php echo htmlspecialchars($transaction['account_name']); ?></span>
+                                                <span>&bull;</span>
+                                                <span><?php echo htmlspecialchars($transaction['category'] ?: 'Uncategorized'); ?></span>
+                                                <span>&bull;</span>
                                                 <span><?php echo date('M j, Y', strtotime($transaction['transaction_date'])); ?></span>
                                             </div>
                                         </div>
                                     </div>
-
-                                    <!-- Right Section - Amount and Type -->
-                                    <div class="flex items-center justify-between sm:justify-end sm:flex-col sm:items-end gap-2 sm:gap-1 flex-shrink-0">
-                                        <p class="<?php echo $transaction['type'] === 'income' ? 'text-green-600' : 'text-red-600'; ?> font-semibold text-sm sm:text-base whitespace-nowrap">
+                                    <div class="text-right flex-shrink-0 pl-3">
+                                        <p class="text-sm font-bold <?php echo $transaction['type'] === 'income' ? 'text-emerald-700' : 'text-slate-900'; ?>">
                                             <?php echo $transaction['type'] === 'income' ? '+' : '-'; ?>₹<?php echo number_format($transaction['amount'], 2); ?>
                                         </p>
-                                        <p class="text-xs text-gray-500 capitalize hidden sm:block">
-                                            <?php echo $transaction['type']; ?>
-                                        </p>
-                                        <!-- Mobile type badge -->
-                                        <span class="sm:hidden text-xs px-2 py-1 rounded-full <?php echo $transaction['type'] === 'income' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'; ?>">
+                                        <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold uppercase tracking-wider <?php echo $transaction['type'] === 'income' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'; ?>">
                                             <?php echo $transaction['type']; ?>
                                         </span>
                                     </div>
                                 </div>
                             <?php endwhile; ?>
                         <?php else: ?>
-                            <div class="text-center py-8">
-                                <div class="p-4 bg-gray-100 rounded-full inline-flex mb-4">
-                                    <svg class="h-8 w-8 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                                    </svg>
-                                </div>
-                                <p class="text-gray-500 mb-2">No transactions yet</p>
-                                <a href="transactions.php" class="text-blue-600 hover:text-blue-800 font-medium">Add your first transaction!</a>
+                            <div class="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-300">
+                                <p class="text-xs font-medium text-slate-500">No transactions recorded yet.</p>
+                                <a href="transactions.php" class="text-xs font-semibold text-slate-900 underline mt-1 inline-block">Create first entry</a>
                             </div>
                         <?php endif; ?>
                     </div>
                 </div>
             </div>
 
-            <!-- Right Column -->
+            <!-- Right Column: Upcoming Bills & Quick Actions -->
             <div class="space-y-8">
-                <!-- Quick Actions -->
-                <div class="bg-white rounded-2xl shadow-lg p-6">
-                    <div class="flex items-center justify-between mb-6">
-                        <h2 class="text-xl font-bold text-gray-800">Quick Actions</h2>
-                        <div class="p-2 bg-blue-100 rounded-lg">
-                            <svg class="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                            </svg>
+                <!-- Upcoming Bills Due Widget -->
+                <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center space-x-2">
+                            <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+                            <h2 class="text-base font-bold text-slate-900">Upcoming Bills (14d)</h2>
                         </div>
+                        <a href="bills.php" class="text-xs font-semibold text-slate-700 hover:text-slate-900">Manage</a>
                     </div>
 
-                    <div class="space-y-3">
-                        <a href="transactions.php?action=add"
-                            class="flex items-center justify-between p-4 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-xl hover:from-green-600 hover:to-green-700 transition duration-200 group">
-                            <div class="flex items-center space-x-3">
-                                <div class="p-2 bg-white bg-opacity-20 rounded-lg">
-                                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                                    </svg>
+                    <div class="space-y-2.5">
+                        <?php if (!empty($upcoming_bills)): ?>
+                            <?php foreach ($upcoming_bills as $b): ?>
+                                <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
+                                    <div class="min-w-0 pr-2">
+                                        <div class="font-bold text-xs text-slate-900 truncate"><?php echo htmlspecialchars($b['title']); ?></div>
+                                        <div class="text-[11px] text-slate-500 mt-0.5">
+                                            Due <?php echo date('M j', strtotime($b['next_due_date'])); ?> 
+                                            <?php if ($b['days_left'] < 0): ?>
+                                                <span class="text-rose-600 font-bold">(Overdue)</span>
+                                            <?php elseif ($b['days_left'] <= 3): ?>
+                                                <span class="text-amber-700 font-bold">(In <?php echo $b['days_left']; ?>d)</span>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <div class="text-right flex-shrink-0">
+                                        <div class="text-xs font-bold text-slate-900">₹<?php echo number_format($b['amount'], 2); ?></div>
+                                        <a href="bills.php" class="text-[10px] font-bold text-emerald-800 hover:underline mt-0.5 inline-block">Review &rarr;</a>
+                                    </div>
                                 </div>
-                                <span class="font-medium">Add Income</span>
-                            </div>
-                            <svg class="h-4 w-4 transform group-hover:translate-x-1 transition duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                            </svg>
-                        </a>
-
-                        <a href="transactions.php?action=add&type=expense"
-                            class="flex items-center justify-between p-4 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:from-red-600 hover:to-red-700 transition duration-200 group">
-                            <div class="flex items-center space-x-3">
-                                <div class="p-2 bg-white bg-opacity-20 rounded-lg">
-                                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
-                                    </svg>
-                                </div>
-                                <span class="font-medium">Add Expense</span>
-                            </div>
-                            <svg class="h-4 w-4 transform group-hover:translate-x-1 transition duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                            </svg>
-                        </a>
-
-                        <a href="accounts.php"
-                            class="flex items-center justify-between p-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl hover:from-blue-600 hover:to-blue-700 transition duration-200 group">
-                            <div class="flex items-center space-x-3">
-                                <div class="p-2 bg-white bg-opacity-20 rounded-lg">
-                                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                                    </svg>
-                                </div>
-                                <span class="font-medium">Manage Accounts</span>
-                            </div>
-                            <svg class="h-4 w-4 transform group-hover:translate-x-1 transition duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                            </svg>
-                        </a>
-
-                        <a href="transfers.php"
-                            class="flex items-center justify-between p-4 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-xl hover:from-purple-600 hover:to-purple-700 transition duration-200 group">
-                            <div class="flex items-center space-x-3">
-                                <div class="p-2 bg-white bg-opacity-20 rounded-lg">
-                                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                                    </svg>
-                                </div>
-                                <span class="font-medium">Transfer Funds</span>
-                            </div>
-                            <svg class="h-4 w-4 transform group-hover:translate-x-1 transition duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                            </svg>
-                        </a>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <p class="text-xs text-slate-500 py-3 text-center">No bills scheduled in the next 14 days.</p>
+                        <?php endif; ?>
                     </div>
                 </div>
 
-                <!-- Recent Transfers -->
-                <div class="bg-white rounded-2xl shadow-lg p-6">
-                    <div class="flex items-center justify-between mb-6">
-                        <h2 class="text-xl font-bold text-gray-800">Recent Transfers</h2>
-                        <a href="transfers.php" class="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center space-x-1">
-                            <span>View All</span>
-                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                            </svg>
-                        </a>
+                <!-- Savings Goals Quick View -->
+                <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-base font-bold text-slate-900">Savings Goals</h2>
+                        <a href="goals.php" class="text-xs font-semibold text-slate-700 hover:text-slate-900">View All</a>
                     </div>
 
-                    <div class="space-y-4">
-                        <?php if ($recent_transfers->num_rows > 0): ?>
-                            <?php while ($transfer = $recent_transfers->fetch_assoc()): ?>
-                                <div class="p-4 bg-gray-50 rounded-xl hover:bg-gray-100 transition duration-200">
-                                    <div class="flex items-center justify-between mb-2">
-                                        <div class="flex items-center space-x-2">
-                                            <div class="p-2 bg-purple-100 rounded-lg">
-                                                <svg class="h-4 w-4 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                                                </svg>
-                                            </div>
-                                            <span class="text-purple-600 font-semibold">₹<?php echo number_format($transfer['amount'], 2); ?></span>
-                                        </div>
-                                        <span class="text-xs text-gray-500"><?php echo date('M j', strtotime($transfer['transfer_date'])); ?></span>
+                    <div class="space-y-3 max-h-[460px] overflow-y-auto pr-1 inscrolling-table-container">
+                        <?php if (!empty($featured_goals)): ?>
+                            <?php foreach ($featured_goals as $fg): 
+                                $fpct = ($fg['target_amount'] > 0) ? round(($fg['current_amount'] / $fg['target_amount']) * 100, 1) : 0;
+                            ?>
+                                <div class="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                                    <div class="flex justify-between items-center text-xs mb-1 font-semibold">
+                                        <span class="text-slate-900 truncate pr-2"><?php echo htmlspecialchars($fg['title']); ?></span>
+                                        <span class="text-slate-600"><?php echo $fpct; ?>%</span>
                                     </div>
-                                    <div class="flex items-center justify-between text-sm">
-                                        <span class="text-gray-600 font-medium"><?php echo htmlspecialchars($transfer['from_account_name']); ?></span>
-                                        <svg class="h-4 w-4 text-gray-400 mx-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                                        </svg>
-                                        <span class="text-gray-600 font-medium"><?php echo htmlspecialchars($transfer['to_account_name']); ?></span>
+                                    <div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                                        <div class="h-full rounded-full bg-emerald-600" style="width: <?php echo min(100, $fpct); ?>%;"></div>
                                     </div>
-                                    <?php if ($transfer['description']): ?>
-                                        <p class="text-xs text-gray-500 mt-2 truncate"><?php echo htmlspecialchars($transfer['description']); ?></p>
-                                    <?php endif; ?>
+                                    <div class="flex justify-between text-[10px] text-slate-500 mt-1">
+                                        <span>₹<?php echo number_format($fg['current_amount'], 0); ?></span>
+                                        <span>₹<?php echo number_format($fg['target_amount'], 0); ?></span>
+                                    </div>
                                 </div>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         <?php else: ?>
-                            <div class="text-center py-8">
-                                <div class="p-4 bg-gray-100 rounded-full inline-flex mb-4">
-                                    <svg class="h-8 w-8 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                                    </svg>
-                                </div>
-                                <p class="text-gray-500 mb-2">No transfers yet</p>
-                                <a href="transfers.php" class="text-blue-600 hover:text-blue-800 font-medium">Make your first transfer!</a>
-                            </div>
+                            <p class="text-xs text-slate-500 py-2 text-center">No active milestone goals defined.</p>
                         <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- Quick Operations Navigator -->
+                <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                    <h2 class="text-base font-bold text-slate-900 mb-4">Quick Navigation</h2>
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        <a href="budgets.php" class="p-2.5 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 text-slate-800 font-semibold text-center transition">
+                            Category Budgets
+                        </a>
+                        <a href="bills.php" class="p-2.5 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 text-slate-800 font-semibold text-center transition">
+                            Recurring Bills
+                        </a>
+                        <a href="goals.php" class="p-2.5 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 text-slate-800 font-semibold text-center transition">
+                            Savings Goals
+                        </a>
+                        <a href="forecast.php" class="p-2.5 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 text-slate-800 font-semibold text-center transition">
+                            Cash Flow Engine
+                        </a>
                     </div>
                 </div>
             </div>
         </div>
-    </div>
+    </main>
 
     <?php include __DIR__ . '/../includes/footer.php'; ?>
 </body>

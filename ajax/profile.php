@@ -6,6 +6,7 @@ header('Content-Type: application/json');
 
 $auth = new Auth();
 if (!$auth->isLoggedIn()) {
+    http_response_code(401);
     echo json_encode(['success' => false, 'message' => 'Not authenticated']);
     exit;
 }
@@ -18,8 +19,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     switch ($action) {
         case 'update_profile':
-            $full_name = $_POST['full_name'] ?? '';
-            $username = $_POST['username'] ?? '';
+            if (!$auth->validateCSRFRequest()) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'Invalid or missing CSRF token']);
+                break;
+            }
+
+            $full_name = trim($_POST['full_name'] ?? '');
+            $username = trim($_POST['username'] ?? '');
             $current_password = $_POST['current_password'] ?? '';
             $new_password = $_POST['new_password'] ?? '';
 
